@@ -1,12 +1,12 @@
 --[[
     NOVA Bridge - vRPex Server
-    Só ativo quando BridgeConfig.Mode == 'vrpex'
+    Ativo quando vRPex está nos ActiveBridges
     
     Implementa a API vRPex mapeada para o NOVA Framework.
     Scripts vRP acedem via Proxy.getInterface("vRP").
 ]]
 
-if BridgeConfig.Mode ~= 'vrpex' then return end
+if not BridgeConfig.ActiveBridges.vrpex then return end
 
 -- ============================================================
 -- HELPERS
@@ -337,6 +337,49 @@ function vRP.tryDeposit(user_id, value)
         return true
     end
     return false
+end
+
+-- ============================
+-- GEMS (moeda VIP)
+-- ============================
+
+function vRP.getGems(user_id)
+    local player = getPlayerByUserId(user_id)
+    if not player then return 0 end
+    return player:GetMoney('gems')
+end
+
+function vRP.giveGems(user_id, amount)
+    local player = getPlayerByUserId(user_id)
+    if not player then return end
+    player:AddMoney('gems', amount, 'vrp_bridge_gems')
+end
+
+function vRP.removeGems(user_id, amount)
+    local player = getPlayerByUserId(user_id)
+    if not player then return false end
+    if player:GetMoney('gems') >= amount then
+        return player:RemoveMoney('gems', amount, 'vrp_bridge_gems')
+    end
+    return false
+end
+
+function vRP.setGems(user_id, amount)
+    local player = getPlayerByUserId(user_id)
+    if not player then return end
+    player:SetMoney('gems', amount)
+end
+
+function vRP.userGemstone(user_id)
+    return vRP.getGems(user_id)
+end
+
+function vRP.upgradeGemstone(user_id, amount)
+    vRP.giveGems(user_id, amount)
+end
+
+function vRP.paymentGems(user_id, amount)
+    return vRP.removeGems(user_id, amount)
 end
 
 -- ============================
@@ -907,15 +950,91 @@ end
 
 -- Também registar como Tunnel para que scripts acedam via Tunnel.getInterface("vRP")
 registerServerTunnel('vRP', {
-    -- Funções do server chamáveis via Tunnel do client
     getUserId = vRP.getUserId,
+    getUserSource = vRP.getUserSource,
+    getUsers = vRP.getUsers,
     getMoney = vRP.getMoney,
+    giveMoney = vRP.giveMoney,
+    tryPayment = vRP.tryPayment,
     getBankMoney = vRP.getBankMoney,
+    giveBankMoney = vRP.giveBankMoney,
+    tryBankPayment = vRP.tryBankPayment,
+    setBankMoney = vRP.setBankMoney,
+    getAllMoney = vRP.getAllMoney,
+    tryFullPayment = vRP.tryFullPayment,
+    tryWithdraw = vRP.tryWithdraw,
+    tryDeposit = vRP.tryDeposit,
+    getGems = vRP.getGems,
+    giveGems = vRP.giveGems,
+    removeGems = vRP.removeGems,
+    setGems = vRP.setGems,
+    userGemstone = vRP.userGemstone,
+    upgradeGemstone = vRP.upgradeGemstone,
+    paymentGems = vRP.paymentGems,
     getUserIdentity = vRP.getUserIdentity,
+    getUserByRegistration = vRP.getUserByRegistration,
+    getUserByPhone = vRP.getUserByPhone,
     hasGroup = vRP.hasGroup,
+    hasGroupActive = vRP.hasGroupActive,
+    addUserGroup = vRP.addUserGroup,
+    removeUserGroup = vRP.removeUserGroup,
     hasPermission = vRP.hasPermission,
     getUserGroups = vRP.getUserGroups,
+    getUsersByPermission = vRP.getUsersByPermission,
+    getGroups = vRP.getGroups,
+    getGroupTitle = vRP.getGroupTitle,
+    getGroupType = vRP.getGroupType,
+    getUserGroupByType = vRP.getUserGroupByType,
+    giveInventoryItem = vRP.giveInventoryItem,
+    tryGetInventoryItem = vRP.tryGetInventoryItem,
     getInventoryItemAmount = vRP.getInventoryItemAmount,
+    getInventory = vRP.getInventory,
+    getInventoryWeight = vRP.getInventoryWeight,
+    itemExists = vRP.itemExists,
+    itemNameList = vRP.itemNameList,
+    getItemWeight = vRP.getItemWeight,
+    getUserDataTable = vRP.getUserDataTable,
+    setKeyDataTable = vRP.setKeyDataTable,
+    getUData = vRP.getUData,
+    setUData = vRP.setUData,
+    getSData = vRP.getSData,
+    setSData = vRP.setSData,
+    getNeed = vRP.getNeed,
+    setNeed = vRP.setNeed,
+    isBanned = vRP.isBanned,
+    setBanned = vRP.setBanned,
+    format = vRP.format,
+    getDayHours = vRP.getDayHours,
+    getMinSecs = vRP.getMinSecs,
+    generateStringNumber = vRP.generateStringNumber,
+    generateRegistrationNumber = vRP.generateRegistrationNumber,
+    generatePhoneNumber = vRP.generatePhoneNumber,
+    generateUserRH = vRP.generateUserRH,
+    kick = vRP.kick,
+    webhook = vRP.webhook,
+    -- Additional functions
+    GetEntityCoords = vRP.GetEntityCoords,
+    InsideVehicle = vRP.InsideVehicle,
+    Revive = vRP.Revive,
+    FullName = vRP.FullName,
+    teleportPlayer = vRP.teleportPlayer,
+    ServiceToggle = vRP.ServiceToggle,
+    ServiceEnter = vRP.ServiceEnter,
+    ServiceLeave = vRP.ServiceLeave,
+    HasService = vRP.HasService,
+    GetUserType = vRP.GetUserType,
+    TakeChest = vRP.TakeChest,
+    StoreChest = vRP.StoreChest,
+    UpdateChest = vRP.UpdateChest,
+    DirectChest = vRP.DirectChest,
+    -- PascalCase aliases
+    Passport = vRP.Passport,
+    Source = vRP.Source,
+    Players = vRP.Players,
+    Datatable = vRP.Datatable,
+    Identity = vRP.Identity,
+    Identities = vRP.Identities,
+    Kick = vRP.Kick,
 })
 
 -- ============================================================
@@ -960,6 +1079,101 @@ end)
 AddEventHandler('nova:server:onMoneyChange', function(source, moneyType, action)
     -- vRP não tem evento genérico de money change
 end)
+
+-- ============================
+-- FUNÇÕES ADICIONAIS (compat com Creative-v6 e scripts mistos)
+-- ============================
+
+-- Entity helpers
+function vRP.GetEntityCoords(source)
+    local ped = GetPlayerPed(source)
+    if ped and DoesEntityExist(ped) then
+        local c = GetEntityCoords(ped)
+        return c.x, c.y, c.z
+    end
+    return 0, 0, 0
+end
+
+function vRP.InsideVehicle(source)
+    local ped = GetPlayerPed(source)
+    if ped and DoesEntityExist(ped) then
+        return GetVehiclePedIsIn(ped, false) ~= 0
+    end
+    return false
+end
+
+-- Revive
+function vRP.Revive(source, health, arena)
+    local ped = GetPlayerPed(source)
+    if ped and DoesEntityExist(ped) then
+        TriggerClientEvent('vRP:bridge:revive', source, health or 200)
+    end
+end
+
+-- FullName
+function vRP.FullName(user_id)
+    local player = getPlayerByUserId(user_id)
+    if not player then return 'Desconhecido' end
+    local first = player.charinfo and player.charinfo.firstname or ''
+    local last = player.charinfo and player.charinfo.lastname or ''
+    return first .. ' ' .. last
+end
+
+-- Teleport (with source directly)
+function vRP.teleportPlayer(source, x, y, z)
+    TriggerClientEvent('vRP:bridge:teleport', source, x, y, z)
+end
+
+-- Service system
+function vRP.ServiceToggle(user_id, group)
+    local player = getPlayerByUserId(user_id)
+    if not player then return end
+    local job = player:GetJob()
+    if job and job.name == group then player:ToggleDuty() end
+end
+
+function vRP.ServiceEnter(user_id, group, grade)
+    vRP.addUserGroup(user_id, group, grade or 0)
+end
+
+function vRP.ServiceLeave(user_id, group)
+    local player = getPlayerByUserId(user_id)
+    if not player then return end
+    local job = player:GetJob()
+    if job and job.name == group and job.duty then
+        player:ToggleDuty()
+    end
+end
+
+function vRP.HasService(user_id, group)
+    local player = getPlayerByUserId(user_id)
+    if not player then return false end
+    local job = player:GetJob()
+    return job and job.name == group and (job.duty or false)
+end
+
+function vRP.GetUserType(user_id)
+    local player = getPlayerByUserId(user_id)
+    if not player then return 'user' end
+    return player.group or 'user'
+end
+
+-- Chest functions (stubs)
+function vRP.TakeChest(chest, item, amount) return true end
+function vRP.StoreChest(chest, item, amount) return true end
+function vRP.UpdateChest(chest, data) end
+function vRP.DirectChest(chest) return {} end
+function vRP.ChestWeight(chest) return 0 end
+function vRP.InventoryFull(user_id) return false end
+
+-- PascalCase aliases for mixed vRPex/Creative scripts
+vRP.Passport = vRP.getUserId
+vRP.Source = vRP.getUserSource
+vRP.Players = vRP.getUsers
+vRP.Datatable = vRP.getUserDataTable
+vRP.Identity = vRP.getUserIdentity
+vRP.Identities = vRP.getIdentifiers
+vRP.Kick = vRP.kick
 
 -- ============================================================
 -- REGISTAR INTERFACE PROXY

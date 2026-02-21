@@ -16,7 +16,7 @@ game 'gta5'
 name 'nova_bridge'
 description 'NOVA Framework - ESX, QBCore, vRPex & Creative Compatibility Bridge'
 author 'NOVA Development'
-version '2.0.0'
+version '3.0.0'
 lua54 'yes'
 
 shared_scripts {
@@ -26,6 +26,7 @@ shared_scripts {
 
 server_scripts {
     '@oxmysql/lib/MySQL.lua',
+    'config/*',
     'server/esx.lua',
     'server/qb.lua',
     'server/vrpex.lua',
@@ -33,17 +34,24 @@ server_scripts {
 }
 
 client_scripts {
+    'config/*',
     'client/esx.lua',
     'client/qb.lua',
     'client/vrpex.lua',
     'client/creative.lua',
 }
 
+files {
+    'lib/*',
+    'config/*',
+}
+
 dependencies {
     'nova_core',
 }
 
--- Provide todos: o runtime decide qual ativar via config
 provide 'es_extended'
+provide 'esx_core'
 provide 'qb-core'
 provide 'vrp'
+provide 'vrpex'

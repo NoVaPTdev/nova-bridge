@@ -1,6 +1,6 @@
 --[[
     NOVA Bridge - Creative Server
-    Só ativo quando BridgeConfig.Mode == 'creative'
+    Ativo quando Creative está nos ActiveBridges
     
     Implementa a API Creative (vRP-based) mapeada para o NOVA Framework.
     Scripts Creative acedem via Proxy.getInterface("vRP").
@@ -12,7 +12,7 @@
     - Sistema de multas
 ]]
 
-if BridgeConfig.Mode ~= 'creative' then return end
+if not BridgeConfig.ActiveBridges.creative then return end
 
 -- ============================================================
 -- HELPERS
@@ -43,39 +43,9 @@ local function getSourceByUserId(user_id)
     return userIdToSource[user_id]
 end
 
--- Regista handlers Proxy para uma interface
-local function registerProxyInterface(name, itable)
-    for k, v in pairs(itable) do
-        if type(v) == 'function' then
-            AddEventHandler('vRP:proxy:' .. name .. ':' .. k, function(rid, ...)
-                if rid and rid ~= '' then
-                    local rets = {v(...)}
-                    TriggerEvent('vRP:proxy_res:' .. rid, table.unpack(rets))
-                else
-                    v(...)
-                end
-            end)
-        end
-    end
-end
-
--- Regista handlers Tunnel (server recebe chamadas do client)
-local function registerServerTunnel(name, itable)
-    for k, v in pairs(itable) do
-        if type(v) == 'function' then
-            RegisterNetEvent('vRP:tunnel:' .. name .. ':' .. k)
-            AddEventHandler('vRP:tunnel:' .. name .. ':' .. k, function(rid, ...)
-                local _source = source
-                if rid and rid ~= '' then
-                    local rets = {v(...)}
-                    TriggerClientEvent('vRP:tunnel_res:' .. rid, _source, table.unpack(rets))
-                else
-                    v(...)
-                end
-            end)
-        end
-    end
-end
+-- Carregar libs Proxy/Tunnel reais (formato Creative)
+local Proxy = module("vrp", "lib/Proxy")
+local Tunnel = module("vrp", "lib/Tunnel")
 
 -- ============================================================
 -- vRP INTERFACE (CREATIVE API)
@@ -174,6 +144,8 @@ function vRP.getIdentifiers(source)
             end
         end
     end
+    ids._source = source
+    ids._uid = sourceToUserId[source]
     return ids
 end
 
@@ -193,14 +165,18 @@ end
 function vRP.userIdentity(user_id)
     local player = getPlayerByUserId(user_id)
     if not player then return nil end
+    local ci = player.charinfo or {}
+    local gender = ci.gender
+    if type(gender) ~= 'number' then gender = 0 end
     return {
-        name = player.charinfo.firstname,
-        firstname = player.charinfo.firstname,
-        name2 = player.charinfo.lastname,
-        lastname = player.charinfo.lastname,
-        age = player.charinfo.dateofbirth or '01/01/2000',
+        name = ci.firstname or '',
+        firstname = ci.firstname or '',
+        name2 = ci.lastname or '',
+        lastname = ci.lastname or '',
+        age = ci.dateofbirth or '01/01/2000',
         registration = player.citizenid,
-        phone = player.charinfo.phone or '000-0000',
+        phone = ci.phone or '000-0000',
+        sex = gender == 1 and 'Feminino' or 'Masculino',
         rh = player:GetMetadata('blood_type') or 'O+',
         image = player:GetMetadata('profile_image') or '',
     }
@@ -436,24 +412,24 @@ function vRP.getAllMoney(user_id)
     return player:GetMoney('cash') + player:GetMoney('bank')
 end
 
--- Creative gems (mapeado para black_money)
+-- Creative gems (moeda VIP)
 function vRP.userGemstone(user_id)
     local player = getPlayerByUserId(user_id)
     if not player then return 0 end
-    return player:GetMoney('black_money')
+    return player:GetMoney('gems')
 end
 
 function vRP.upgradeGemstone(user_id, amount)
     local player = getPlayerByUserId(user_id)
     if not player then return end
-    player:AddMoney('black_money', amount, 'creative_bridge_gems')
+    player:AddMoney('gems', amount, 'creative_bridge_gems')
 end
 
 function vRP.paymentGems(user_id, amount)
     local player = getPlayerByUserId(user_id)
     if not player then return false end
-    if player:GetMoney('black_money') >= amount then
-        return player:RemoveMoney('black_money', amount, 'creative_bridge_gems')
+    if player:GetMoney('gems') >= amount then
+        return player:RemoveMoney('gems', amount, 'creative_bridge_gems')
     end
     return false
 end
@@ -1067,6 +1043,10 @@ function vRP.infoAccount(steam)
     return nil
 end
 
+function vRP.userInfos(user_id)
+    return nil
+end
+
 function vRP.isBanned(id)
     return vRP.checkBanned(id)
 end
@@ -1110,23 +1090,7 @@ end
 
 function vRP.freeBucket(id) end
 
--- ============================================================
--- TUNNEL (SERVER → CLIENT)
--- ============================================================
-
-registerServerTunnel('vRP', {
-    getUserId = vRP.getUserId,
-    getMoney = vRP.getMoney,
-    getBank = vRP.getBank,
-    getBankMoney = vRP.getBankMoney,
-    getUserIdentity = vRP.getUserIdentity,
-    userIdentity = vRP.userIdentity,
-    hasGroup = vRP.hasGroup,
-    hasPermission = vRP.hasPermission,
-    getUserGroups = vRP.getUserGroups,
-    getInventoryItemAmount = vRP.getInventoryItemAmount,
-    itemAmount = vRP.itemAmount,
-})
+-- Interfaces registadas no fim do ficheiro via Proxy.addInterface e Tunnel.bindInterface
 
 -- ============================================================
 -- EVENTOS NOVA → Creative/vRP
@@ -1168,11 +1132,327 @@ AddEventHandler('nova:server:onJobChange', function(source, newJob, oldJob)
     end
 end)
 
+-- ============================
+-- PASCALCASE ALIASES (Creative Premium / Black Network compat)
+-- ============================
+
+vRP.Passport = vRP.getUserId
+vRP.Source = vRP.userSource
+vRP.Players = vRP.getUsers
+vRP.Datatable = vRP.getDatatable
+vRP.Identity = vRP.userIdentity
+vRP.Identities = vRP.getIdentifiers
+vRP.Kick = vRP.kick
+vRP.GiveBank = vRP.addBank
+vRP.RemoveBank = vRP.delBank
+vRP.GetBank = function(source_or_uid)
+    if source_or_uid and source_or_uid > 0 then
+        local uid = sourceToUserId[source_or_uid] or source_or_uid
+        return vRP.getBank(uid)
+    end
+    return 0
+end
+vRP.GetFine = vRP.getFines
+vRP.GiveFine = vRP.addFines
+vRP.RemoveFine = vRP.delFines
+vRP.PaymentGems = vRP.paymentGems
+vRP.PaymentBank = function(user_id, amount)
+    return vRP.delBank(user_id, amount)
+end
+vRP.PaymentMoney = vRP.tryPayment
+vRP.PaymentDirty = function(user_id, amount)
+    local player = getPlayerByUserId(user_id)
+    if not player then return false end
+    if player:GetMoney('black_money') >= amount then
+        return player:RemoveMoney('black_money', amount, 'creative_bridge')
+    end
+    return false
+end
+vRP.PaymentFull = vRP.paymentFull
+vRP.WithdrawCash = vRP.withdrawCash
+vRP.Groups = vRP.Groups
+vRP.DataGroups = vRP.DataGroups
+vRP.Hierarchy = vRP.Hierarchy
+vRP.NumPermission = vRP.numPermission
+vRP.HasPermission = vRP.hasPermission
+vRP.HasGroup = vRP.hasGroup
+vRP.SetPermission = vRP.setPermission
+vRP.RemovePermission = vRP.removePermission
+vRP.InsertPermission = vRP.insertPermission
+vRP.UpdatePermission = vRP.updatePermission
+vRP.CleanPermission = vRP.cleanPermission
+
+vRP.FalseIdentity = vRP.falseIdentity
+vRP.UpgradeChars = function(user_id) end
+vRP.UpgradeNames = function(user_id, name, name2)
+    vRP.updateName(user_id, name, name2)
+end
+vRP.UpgradePhone = vRP.upgradePhone
+vRP.UserGemstone = vRP.userGemstone
+vRP.UpgradeGemstone = vRP.upgradeGemstone
+vRP.UserPhone = vRP.userPhone
+vRP.PassportPlate = vRP.userPlate
+vRP.GenerateString = vRP.generateStringNumber
+vRP.GeneratePlate = vRP.generatePlate
+vRP.GeneratePhone = vRP.generatePhone
+
+vRP.ConsultItem = vRP.consultItem
+vRP.GetWeight = vRP.getWeight
+vRP.SetWeight = vRP.setWeight
+vRP.InventoryWeight = vRP.inventoryWeight
+vRP.InventoryItemAmount = vRP.getInventoryItemAmount
+vRP.ItemAmount = vRP.itemAmount
+vRP.GiveItem = function(user_id, item, amount, notify, slot)
+    return vRP.giveInventoryItem(user_id, item, amount, notify, slot)
+end
+vRP.GenerateItem = vRP.generateItem
+vRP.TakeItem = function(user_id, item, amount, notify, slot)
+    return vRP.tryGetInventoryItem(user_id, item, amount, notify, slot)
+end
+vRP.RemoveItem = function(user_id, item, amount, notify)
+    return vRP.removeInventoryItem(user_id, item, amount, notify)
+end
+vRP.MaxItens = vRP.checkMaxItens
+vRP.ClearInventory = vRP.clearInventory
+vRP.GetSrvData = vRP.getSrvdata
+vRP.SetSrvData = vRP.setSrvdata
+vRP.RemSrvData = vRP.remSrvdata
+
+vRP.UpgradeThirst = vRP.upgradeThirst
+vRP.UpgradeHunger = vRP.upgradeHunger
+vRP.UpgradeStress = vRP.upgradeStress
+vRP.DowngradeThirst = vRP.downgradeThirst
+vRP.DowngradeHunger = vRP.downgradeHunger
+vRP.DowngradeStress = vRP.downgradeStress
+vRP.GetHealth = vRP.getHealth
+vRP.ModelPlayer = vRP.modelPlayer
+vRP.GetExperience = vRP.getExperience
+vRP.PutExperience = vRP.putExperience
+vRP.SetArmour = vRP.setArmour
+vRP.Teleport = vRP.teleport
+vRP.InitPrison = vRP.initPrison
+vRP.UpdatePrison = vRP.updatePrison
+vRP.CharacterChosen = vRP.characterChosen
+vRP.VehiclePrice = function(vehicle) return 0 end
+vRP.Prepare = vRP.prepare
+vRP.Query = vRP.query
+vRP.Banned = vRP.isBanned
+vRP.UserData = vRP.userData
+vRP.Inventory = function(passport) return vRP.getInventory(passport) end
+
+-- Service system (duty toggle via jobs)
+function vRP.ServiceToggle(user_id, group)
+    local player = getPlayerByUserId(user_id)
+    if not player then return end
+    local job = player:GetJob()
+    if job and job.name == group then
+        player:ToggleDuty()
+    end
+end
+
+function vRP.ServiceEnter(user_id, group, grade)
+    vRP.addUserGroup(user_id, group, grade or 0)
+    vRP.ServiceToggle(user_id, group)
+end
+
+function vRP.ServiceLeave(user_id, group)
+    local player = getPlayerByUserId(user_id)
+    if not player then return end
+    local job = player:GetJob()
+    if job and job.name == group and job.duty then
+        player:ToggleDuty()
+    end
+end
+
+function vRP.HasService(user_id, group)
+    local player = getPlayerByUserId(user_id)
+    if not player then return false end
+    local job = player:GetJob()
+    if job and job.name == group then
+        return job.duty or false
+    end
+    return false
+end
+
+function vRP.GetUserType(user_id)
+    local player = getPlayerByUserId(user_id)
+    if not player then return 'user' end
+    return player.group or 'user'
+end
+
+-- Likes/Social system (stored in metadata)
+function vRP.GiveLikes(user_id, amount)
+    local player = getPlayerByUserId(user_id)
+    if not player then return end
+    local current = player:GetMetadata('likes') or 0
+    player:SetMetadata('likes', current + (amount or 1))
+end
+
+function vRP.GiveUnLikes(user_id, amount)
+    local player = getPlayerByUserId(user_id)
+    if not player then return end
+    local current = player:GetMetadata('unlikes') or 0
+    player:SetMetadata('unlikes', current + (amount or 1))
+end
+
+function vRP.GetLikes(user_id)
+    local player = getPlayerByUserId(user_id)
+    if not player then return 0 end
+    return player:GetMetadata('likes') or 0
+end
+
+function vRP.GetUnLikes(user_id)
+    local player = getPlayerByUserId(user_id)
+    if not player then return 0 end
+    return player:GetMetadata('unlikes') or 0
+end
+
+function vRP.GetStats(user_id)
+    return {
+        likes = vRP.GetLikes(user_id),
+        unlikes = vRP.GetUnLikes(user_id),
+    }
+end
+
+-- Fullname helper
+function vRP.FullName(user_id)
+    local player = getPlayerByUserId(user_id)
+    if not player then return 'Desconhecido' end
+    local first = player.charinfo and player.charinfo.firstname or ''
+    local last = player.charinfo and player.charinfo.lastname or ''
+    return first .. ' ' .. last
+end
+
+-- Entity/Vehicle helpers
+function vRP.GetEntityCoords(source)
+    local ped = GetPlayerPed(source)
+    if ped and DoesEntityExist(ped) then
+        local c = GetEntityCoords(ped)
+        return c.x, c.y, c.z
+    end
+    return 0, 0, 0
+end
+
+function vRP.InsideVehicle(source)
+    local ped = GetPlayerPed(source)
+    if ped and DoesEntityExist(ped) then
+        return GetVehiclePedIsIn(ped, false) ~= 0
+    end
+    return false
+end
+
+-- Memory/Request/Revive
+function vRP.Memory(source, key)
+    return {}
+end
+
+function vRP.Request(source, title, msg, time)
+    return true
+end
+
+function vRP.Revive(source, health, arena)
+    local ped = GetPlayerPed(source)
+    if ped and DoesEntityExist(ped) then
+        TriggerClientEvent('vRP:bridge:revive', source, health or 200)
+    end
+end
+
+function vRP.startLockpick(source)
+    return true
+end
+
+-- Archive (offline data)
+function vRP.Archive(passport)
+    return {}
+end
+
+-- Account (player login account info, accepts passport or identifiers table)
+function vRP.Account(passport_or_ids)
+    local player
+    if type(passport_or_ids) == 'table' then
+        local uid = passport_or_ids._uid
+        local src = passport_or_ids._source
+        if uid then
+            player = getPlayerByUserId(uid)
+        elseif src then
+            player = Nova:GetPlayer(src)
+        end
+        if not player then
+            for s, _ in pairs(sourceToUserId) do
+                player = Nova:GetPlayer(s)
+                if player then break end
+            end
+        end
+    else
+        player = getPlayerByUserId(passport_or_ids)
+    end
+    if not player then return {} end
+    return {
+        identifier = player.identifier,
+        name = player.name,
+        group = player.group,
+        gems = player:GetMoney('gems'),
+        bank = player:GetMoney('bank'),
+        cash = player:GetMoney('cash'),
+        black_money = player:GetMoney('black_money'),
+    }
+end
+
+-- Inside propertys
+function vRP.InsidePropertys(passport)
+    return {}
+end
+
+-- Save/Apply temporary
+function vRP.SaveTemporary(passport, key, value)
+    local dt = vRP.getDatatable(passport)
+    if dt then dt['temp_' .. key] = value end
+end
+
+function vRP.ApplyTemporary(passport, key)
+    local dt = vRP.getDatatable(passport)
+    if dt then return dt['temp_' .. key] end
+    return nil
+end
+
+-- Skin character
+function vRP.SkinCharacter(passport)
+    local player = getPlayerByUserId(passport)
+    if not player then return nil end
+    return player:GetMetadata('skin') or {}
+end
+
+-- Mode (server mode)
+function vRP.Mode()
+    return 'creative'
+end
+
+-- Weight helpers
+function vRP.RemoveWeight(user_id, amount) end
+
+-- Swap slot
+function vRP.SwapSlot(user_id, slot1, slot2) end
+
+-- Check damaged
+function vRP.CheckDamaged(item) return false end
+
+-- Chest functions
+function vRP.ChestWeight(chest) return 0 end
+function vRP.InventoryFull(user_id) return false end
+function vRP.TakeChest(chest, item, amount) return true end
+function vRP.StoreChest(chest, item, amount) return true end
+function vRP.UpdateChest(chest, data) end
+function vRP.DirectChest(chest) return {} end
+
+-- Info account (usado por premium, já definido acima)
+
 -- ============================================================
--- REGISTAR INTERFACE PROXY
+-- REGISTAR INTERFACES (TUNNEL + PROXY)
+-- Colocado aqui para que TODOS os aliases PascalCase já estejam definidos
 -- ============================================================
 
-registerProxyInterface('vRP', vRP)
+Proxy.addInterface("vRP", vRP)
+Tunnel.bindInterface("vRP", vRP)
 
 -- ============================================================
 -- SQL AUXILIAR

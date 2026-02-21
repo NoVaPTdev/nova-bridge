@@ -1,16 +1,18 @@
 --[[
     NOVA Bridge - Configuração
     
-    Define qual bridge ativar para compatibilidade com scripts existentes.
+    Define qual(ais) bridge(s) ativar para compatibilidade com scripts existentes.
     
     Modos disponíveis:
-    - 'esx'      → Ativa compatibilidade com scripts ESX (es_extended)
-    - 'qbcore'   → Ativa compatibilidade com scripts QBCore (qb-core)
-    - 'vrpex'    → Ativa compatibilidade com scripts vRPex
-    - 'creative' → Ativa compatibilidade com scripts Creative (vRP-based)
-    - 'none'     → Desativa bridges (só usas scripts nativos NOVA)
+    - 'auto'                    → Deteta automaticamente e ativa TODOS os bridges necessários
+    - 'esx'                     → Só ESX
+    - 'qbcore'                  → Só QBCore
+    - 'vrpex'                   → Só vRPex
+    - 'creative'                → Só Creative (vRP-based, superset de vRPex)
+    - {'esx', 'creative'}       → Múltiplos bridges em simultâneo
+    - 'none'                    → Desativa todos (só scripts nativos NOVA)
 ]]
 
 BridgeConfig = {
-    Mode = 'esx',  -- 'esx', 'qbcore', 'vrpex', 'creative', ou 'none'
+    Mode = 'auto',
 }

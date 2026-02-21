@@ -1,12 +1,12 @@
 --[[
     NOVA Bridge - vRPex Client
-    Só ativo quando BridgeConfig.Mode == 'vrpex'
+    Ativo quando vRPex está nos ActiveBridges
     
     Implementa a API vRPex client-side mapeada para o NOVA Framework.
     Scripts acedem via Tunnel.getInterface("vRP").
 ]]
 
-if BridgeConfig.Mode ~= 'vrpex' then return end
+if not BridgeConfig.ActiveBridges.vrpex then return end
 
 local isReady = false
 
@@ -177,6 +177,124 @@ function vRPclient.getHealth()
     return GetEntityHealth(PlayerPedId())
 end
 
+function vRPclient.getArmour()
+    return GetPedArmour(PlayerPedId())
+end
+
+function vRPclient.setArmour(amount)
+    SetPedArmour(PlayerPedId(), amount)
+end
+
+function vRPclient.setVisible(state)
+    SetEntityVisible(PlayerPedId(), state, false)
+end
+
+function vRPclient.setInvincible(state)
+    SetEntityInvincible(PlayerPedId(), state)
+end
+
+function vRPclient.setModel(model)
+    local hash = type(model) == 'string' and joaat(model) or model
+    RequestModel(hash)
+    local timeout = 0
+    while not HasModelLoaded(hash) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    if HasModelLoaded(hash) then
+        SetPlayerModel(PlayerId(), hash)
+        SetModelAsNoLongerNeeded(hash)
+    end
+end
+
+function vRPclient.getWeapons()
+    local ped = PlayerPedId()
+    local weapons = {}
+    local weaponHashes = {
+        'WEAPON_PISTOL', 'WEAPON_COMBATPISTOL', 'WEAPON_APPISTOL', 'WEAPON_PISTOL50',
+        'WEAPON_MICROSMG', 'WEAPON_SMG', 'WEAPON_ASSAULTSMG', 'WEAPON_COMBATPDW',
+        'WEAPON_ASSAULTRIFLE', 'WEAPON_CARBINERIFLE', 'WEAPON_ADVANCEDRIFLE', 'WEAPON_SPECIALCARBINE',
+        'WEAPON_PUMPSHOTGUN', 'WEAPON_SAWNOFFSHOTGUN', 'WEAPON_ASSAULTSHOTGUN', 'WEAPON_BULLPUPSHOTGUN',
+        'WEAPON_SNIPERRIFLE', 'WEAPON_HEAVYSNIPER', 'WEAPON_MARKSMANRIFLE',
+        'WEAPON_MINIGUN', 'WEAPON_RPG', 'WEAPON_GRENADELAUNCHER',
+        'WEAPON_KNIFE', 'WEAPON_NIGHTSTICK', 'WEAPON_HAMMER', 'WEAPON_BAT',
+        'WEAPON_STUNGUN', 'WEAPON_FLASHLIGHT',
+    }
+    for _, name in ipairs(weaponHashes) do
+        local hash = joaat(name)
+        if HasPedGotWeapon(ped, hash, false) then
+            local _, ammo = GetAmmoInClip(ped, hash)
+            weapons[name] = { ammo = GetAmmoInPedWeapon(ped, hash) }
+        end
+    end
+    return weapons
+end
+
+function vRPclient.giveWeapons(weapons, clear)
+    local ped = PlayerPedId()
+    if clear then RemoveAllPedWeapons(ped, true) end
+    for name, data in pairs(weapons) do
+        local hash = joaat(name)
+        GiveWeaponToPed(ped, hash, data.ammo or 100, false, false)
+    end
+end
+
+function vRPclient.replaceWeapons(weapons)
+    vRPclient.giveWeapons(weapons, true)
+end
+
+function vRPclient.removeWeapons()
+    RemoveAllPedWeapons(PlayerPedId(), true)
+end
+
+function vRPclient.removeWeapon(name)
+    local hash = joaat(name)
+    RemoveWeaponFromPed(PlayerPedId(), hash)
+end
+
+function vRPclient.setCapuz(state)
+    -- Stub
+end
+
+-- tvRP callbacks
+function vRPclient.invUpdate(items)
+    -- Stub: inventário gerido pelo nova_inventory
+end
+
+function vRPclient.CreatePed(model, x, y, z, heading, freeze, invincible)
+    local hash = type(model) == 'string' and joaat(model) or model
+    RequestModel(hash)
+    local timeout = 0
+    while not HasModelLoaded(hash) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    if HasModelLoaded(hash) then
+        local ped = CreatePed(4, hash, x, y, z, heading or 0.0, true, true)
+        if freeze then FreezeEntityPosition(ped, true) end
+        if invincible then SetEntityInvincible(ped, true) end
+        SetModelAsNoLongerNeeded(hash)
+        return ped
+    end
+    return nil
+end
+
+function vRPclient.CreateObject(model, x, y, z, heading)
+    local hash = type(model) == 'string' and joaat(model) or model
+    RequestModel(hash)
+    local timeout = 0
+    while not HasModelLoaded(hash) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    if HasModelLoaded(hash) then
+        local obj = CreateObject(hash, x, y, z, true, false, false)
+        if heading then SetEntityHeading(obj, heading) end
+        SetModelAsNoLongerNeeded(hash)
+        return obj
+    end
+    return nil
+end
+
+function vRPclient.revive(health)
+    local ped = PlayerPedId()
+    SetEntityHealth(ped, health or 200)
+    local coords = GetEntityCoords(ped)
+    NetworkResurrectLocalPlayer(coords.x, coords.y, coords.z, GetEntityHeading(ped), true, false)
+    ClearPedBloodDamage(ped)
+end
+
 -- Registar como Tunnel para que scripts acedam via Tunnel.getInterface("vRP")
 registerClientTunnel('vRP', vRPclient)
 
@@ -202,6 +320,11 @@ end)
 RegisterNetEvent('vRP:bridge:playSound')
 AddEventHandler('vRP:bridge:playSound', function(dict, name)
     vRPclient.playSound(dict, name)
+end)
+
+RegisterNetEvent('vRP:bridge:revive')
+AddEventHandler('vRP:bridge:revive', function(health)
+    vRPclient.revive(health)
 end)
 
 -- ============================================================

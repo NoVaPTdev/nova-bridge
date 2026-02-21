@@ -1,12 +1,13 @@
 --[[
     NOVA Bridge - QBCore Server
-    Só ativo quando BridgeConfig.Mode == 'qbcore'
+    Ativo quando QBCore está nos ActiveBridges
 ]]
 
-if BridgeConfig.Mode ~= 'qbcore' then return end
+if not BridgeConfig.ActiveBridges.qbcore then return end
 
 local Nova = exports['nova_core']:GetObject()
 local UsableItems = {}
+local ServerCallbacks = {}
 
 -- Preencher QBCore.Shared com dados do NOVA
 CreateThread(function()
@@ -16,13 +17,15 @@ CreateThread(function()
     local ok, items = pcall(function() return exports['nova_core']:GetItems() end)
     if ok and items then
         for name, item in pairs(items) do
-            QBCore.Shared.Items[name] = {
-                name = item.name or name, label = item.label or name,
-                weight = item.weight or 0, type = item.type or 'item',
-                image = item.image or (name .. '.png'), unique = item.unique or false,
-                useable = item.useable or false, shouldClose = item.shouldClose or true,
-                description = item.description or '',
-            }
+            pcall(function()
+                QBCore.Shared.Items[name] = {
+                    name = item.name or name, label = item.label or name,
+                    weight = item.weight or 0, type = item.type or 'item',
+                    image = item.image or (name .. '.png'), unique = item.unique or false,
+                    useable = item.useable or false, shouldClose = item.shouldClose or true,
+                    description = item.description or '', combinable = item.combinable,
+                }
+            end)
         end
     end
 
@@ -31,6 +34,8 @@ CreateThread(function()
 
     local okG, gangs = pcall(function() return exports['nova_core']:GetGangs() end)
     if okG and gangs then QBCore.Shared.Gangs = gangs end
+
+    QBCore.Config.Server.Uptime = os.time()
 end)
 
 -- ============================================================
@@ -42,6 +47,11 @@ local function WrapPlayer(novaPlayer)
 
     local Player = {}
     Player.Functions = {}
+    Player.Offline = false
+
+    local function refreshPlayer()
+        return exports['nova_core']:GetPlayer(novaPlayer:GetSource())
+    end
 
     local job = novaPlayer:GetJob()
     local gang = novaPlayer:GetGang()
@@ -53,18 +63,20 @@ local function WrapPlayer(novaPlayer)
         license = novaPlayer.identifier,
         cid = 1,
         charinfo = {
-            firstname = novaPlayer.charinfo.firstname,
-            lastname = novaPlayer.charinfo.lastname,
-            birthdate = novaPlayer.charinfo.dateofbirth,
-            gender = novaPlayer.charinfo.gender,
-            nationality = novaPlayer.charinfo.nationality,
-            phone = novaPlayer.charinfo.phone,
-            account = '0000000000',
+            firstname = novaPlayer.charinfo and novaPlayer.charinfo.firstname or '',
+            lastname = novaPlayer.charinfo and novaPlayer.charinfo.lastname or '',
+            birthdate = novaPlayer.charinfo and novaPlayer.charinfo.dateofbirth or '',
+            gender = novaPlayer.charinfo and novaPlayer.charinfo.gender or 0,
+            nationality = novaPlayer.charinfo and novaPlayer.charinfo.nationality or '',
+            phone = novaPlayer.charinfo and novaPlayer.charinfo.phone or '',
+            account = novaPlayer.charinfo and novaPlayer.charinfo.account or '0000000000',
+            backstory = novaPlayer.charinfo and novaPlayer.charinfo.backstory or '',
         },
         money = {
             cash = novaPlayer:GetMoney('cash'),
             bank = novaPlayer:GetMoney('bank'),
             crypto = novaPlayer:GetMoney('black_money'),
+            gems = novaPlayer:GetMoney('gems'),
         },
         job = {
             name = job.name, label = job.label, type = job.type,
@@ -78,6 +90,7 @@ local function WrapPlayer(novaPlayer)
         metadata = novaPlayer:GetMetadata() or {},
         position = novaPlayer:GetPosition(),
         items = {},
+        optin = true,
     }
 
     local inv = novaPlayer:GetInventory()
@@ -87,7 +100,12 @@ local function WrapPlayer(novaPlayer)
                 name = item.name, label = item.label or item.name,
                 amount = item.amount or item.count or 0,
                 weight = item.weight or 0, info = item.metadata or {},
-                type = item.type or 'item', slot = i,
+                type = item.type or 'item', slot = item.slot or i,
+                image = item.image or (item.name .. '.png'),
+                unique = item.unique or false,
+                useable = item.useable or false,
+                shouldClose = item.shouldClose or true,
+                description = item.description or '',
             }
         end
     end
@@ -95,11 +113,11 @@ local function WrapPlayer(novaPlayer)
     -- Player.Functions
 
     function Player.Functions.UpdatePlayerData()
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if not p then return end
         Player.PlayerData.money = {
             cash = p:GetMoney('cash'), bank = p:GetMoney('bank'),
-            crypto = p:GetMoney('black_money'),
+            crypto = p:GetMoney('black_money'), gems = p:GetMoney('gems'),
         }
         local j = p:GetJob()
         Player.PlayerData.job = {
@@ -113,17 +131,24 @@ local function WrapPlayer(novaPlayer)
             grade = { name = tostring(g.grade), level = g.grade },
         }
         Player.PlayerData.metadata = p:GetMetadata() or {}
+        Player.PlayerData.position = p:GetPosition()
+
+        TriggerClientEvent('QBCore:Player:SetPlayerData', Player.PlayerData.source, Player.PlayerData)
+    end
+
+    function Player.Functions.SetPlayerData(key, val)
+        Player.PlayerData[key] = val
     end
 
     function Player.Functions.GetMoney(moneyType)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if not p then return 0 end
         local novaType = moneyType == 'crypto' and 'black_money' or moneyType
         return p:GetMoney(novaType)
     end
 
     function Player.Functions.AddMoney(moneyType, amount, reason)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if not p then return false end
         local novaType = moneyType == 'crypto' and 'black_money' or moneyType
         local success = p:AddMoney(novaType, amount, reason)
@@ -131,11 +156,11 @@ local function WrapPlayer(novaPlayer)
             Player.PlayerData.money[moneyType] = p:GetMoney(novaType)
             TriggerClientEvent('QBCore:Client:OnMoneyChange', Player.PlayerData.source, moneyType, amount, 'add', reason or '')
         end
-        return success
+        return success ~= false
     end
 
     function Player.Functions.RemoveMoney(moneyType, amount, reason)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if not p then return false end
         local novaType = moneyType == 'crypto' and 'black_money' or moneyType
         local success = p:RemoveMoney(novaType, amount, reason)
@@ -143,20 +168,23 @@ local function WrapPlayer(novaPlayer)
             Player.PlayerData.money[moneyType] = p:GetMoney(novaType)
             TriggerClientEvent('QBCore:Client:OnMoneyChange', Player.PlayerData.source, moneyType, amount, 'remove', reason or '')
         end
-        return success
+        return success ~= false
     end
 
-    function Player.Functions.SetMoney(moneyType, amount)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+    function Player.Functions.SetMoney(moneyType, amount, reason)
+        local p = refreshPlayer()
         if not p then return false end
         local novaType = moneyType == 'crypto' and 'black_money' or moneyType
         local success = p:SetMoney(novaType, amount)
-        if success then Player.PlayerData.money[moneyType] = amount end
-        return success
+        if success then
+            Player.PlayerData.money[moneyType] = amount
+            TriggerClientEvent('QBCore:Client:OnMoneyChange', Player.PlayerData.source, moneyType, amount, 'set', reason or '')
+        end
+        return success ~= false
     end
 
     function Player.Functions.SetJob(jobName, grade)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if not p then return false end
         local success = p:SetJob(jobName, grade or 0)
         if success then
@@ -164,11 +192,11 @@ local function WrapPlayer(novaPlayer)
             TriggerEvent('QBCore:Server:OnJobUpdate', Player.PlayerData.source, Player.PlayerData.job)
             TriggerClientEvent('QBCore:Client:OnJobUpdate', Player.PlayerData.source, Player.PlayerData.job)
         end
-        return success
+        return success ~= false
     end
 
     function Player.Functions.SetGang(gangName, grade)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if not p then return false end
         local success = p:SetGang(gangName, grade or 0)
         if success then
@@ -176,45 +204,61 @@ local function WrapPlayer(novaPlayer)
             TriggerEvent('QBCore:Server:OnGangUpdate', Player.PlayerData.source, Player.PlayerData.gang)
             TriggerClientEvent('QBCore:Client:OnGangUpdate', Player.PlayerData.source, Player.PlayerData.gang)
         end
-        return success
+        return success ~= false
     end
 
     function Player.Functions.SetMetaData(key, value)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if p then p:SetMetadata(key, value); Player.PlayerData.metadata[key] = value end
+        TriggerClientEvent('QBCore:Player:SetPlayerData', Player.PlayerData.source, Player.PlayerData)
     end
 
     function Player.Functions.GetMetaData(key)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if p then return p:GetMetadata(key) end
         return Player.PlayerData.metadata and Player.PlayerData.metadata[key]
     end
 
     function Player.Functions.AddItem(item, amount, slot, info)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if not p then return false end
-        return p:AddItem(item, amount, info)
+        local success = p:AddItem(item, amount, info)
+        if success then
+            Player.Functions.UpdatePlayerData()
+            TriggerClientEvent('inventory:client:ItemBox', Player.PlayerData.source, QBCore.Shared.Items[item], 'add', amount)
+        end
+        return success ~= false
     end
 
     function Player.Functions.RemoveItem(item, amount, slot)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if not p then return false end
-        return p:RemoveItem(item, amount)
+        local success = p:RemoveItem(item, amount)
+        if success then
+            Player.Functions.UpdatePlayerData()
+            TriggerClientEvent('inventory:client:ItemBox', Player.PlayerData.source, QBCore.Shared.Items[item], 'remove', amount)
+        end
+        return success ~= false
     end
 
     function Player.Functions.HasItem(item, amount)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if not p then return false end
         return p:HasItem(item, amount or 1)
     end
 
     function Player.Functions.GetItemByName(item)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if not p then return nil end
         local count = p:GetItemCount(item)
         if count > 0 then
             local itemData = QBCore.Shared.Items[item]
-            return { name = item, label = itemData and itemData.label or item, amount = count, info = {}, type = itemData and itemData.type or 'item' }
+            return {
+                name = item, label = itemData and itemData.label or item,
+                amount = count, info = {}, type = itemData and itemData.type or 'item',
+                weight = itemData and itemData.weight or 0,
+                image = itemData and itemData.image or (item .. '.png'),
+            }
         end
         return nil
     end
@@ -227,43 +271,65 @@ local function WrapPlayer(novaPlayer)
     end
 
     function Player.Functions.GetItemCount(item)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if not p then return 0 end
         return p:GetItemCount(item)
     end
 
+    function Player.Functions.ClearInventory(filterItems)
+        -- Stub: requer implementação completa via nova_inventory
+    end
+
+    function Player.Functions.SetInventory(items, dontUpdateClient)
+        Player.PlayerData.items = items
+        if not dontUpdateClient then
+            Player.Functions.UpdatePlayerData()
+        end
+    end
+
     function Player.Functions.SetJobDuty(onDuty)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
-        if p and p.job.duty ~= onDuty then p:ToggleDuty() end
+        local p = refreshPlayer()
+        if p then
+            local j = p:GetJob()
+            if j.duty ~= onDuty then p:ToggleDuty() end
+        end
         Player.Functions.UpdatePlayerData()
     end
 
     function Player.Functions.Save()
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if p then p:Save() end
     end
 
     function Player.Functions.Logout()
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if p then p:Logout() end
     end
 
-    function Player.Functions.Notify(text, nType, duration)
-        exports['nova_core']:Notify(Player.PlayerData.source, text, nType or 'info', duration)
+    function Player.Functions.Notify(text, nType, duration, subTitle, notifyId, style)
+        if type(text) == 'table' then
+            exports['nova_core']:Notify(Player.PlayerData.source, text.text or text.caption or '', text.type or nType or 'info', duration)
+        else
+            exports['nova_core']:Notify(Player.PlayerData.source, text, nType or 'info', duration)
+        end
     end
 
     function Player.Functions.Kick(reason)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+        local p = refreshPlayer()
         if p then p:Kick(reason or 'Kicked') end
     end
 
-    function Player.Functions.Ban(reason)
-        local p = exports['nova_core']:GetPlayer(Player.PlayerData.source)
+    function Player.Functions.Ban(reason, duration)
+        local p = refreshPlayer()
         if p then p:Ban(reason or 'Banned') end
     end
 
     function Player.Functions.GetCitizenId()
         return Player.PlayerData.citizenid
+    end
+
+    function Player.Functions.SetCreditCard(number)
+        Player.PlayerData.charinfo.account = number
     end
 
     return Player
@@ -281,6 +347,16 @@ end
 function QBCore.Functions.GetPlayerByCitizenId(citizenid)
     local novaPlayer = exports['nova_core']:GetPlayerByCitizenId(citizenid)
     return WrapPlayer(novaPlayer)
+end
+
+function QBCore.Functions.GetPlayerByPhone(phone)
+    local novaPlayers = exports['nova_core']:GetPlayers()
+    for _, data in ipairs(novaPlayers) do
+        if data.player and data.player.charinfo and data.player.charinfo.phone == phone then
+            return WrapPlayer(data.player)
+        end
+    end
+    return nil
 end
 
 function QBCore.Functions.GetPlayers()
@@ -316,14 +392,21 @@ function QBCore.Functions.GetDutyCount(job)
     return #QBCore.Functions.GetPlayersOnDuty(job)
 end
 
+function QBCore.Functions.GetBucketObjects()
+    return {}
+end
+
 -- CALLBACKS
 
 function QBCore.Functions.CreateCallback(name, cb)
     exports['nova_core']:CreateCallback(name, cb)
+    ServerCallbacks[name] = cb
 end
 
 function QBCore.Functions.TriggerCallback(name, source, cb, ...)
-    if Nova and Nova.ServerCallbacks and Nova.ServerCallbacks[name] then
+    if ServerCallbacks[name] then
+        ServerCallbacks[name](source, cb, ...)
+    elseif Nova and Nova.ServerCallbacks and Nova.ServerCallbacks[name] then
         Nova.ServerCallbacks[name](source, cb, ...)
     end
 end
@@ -332,6 +415,7 @@ end
 
 function QBCore.Functions.CreateUseableItem(name, cb) UsableItems[name] = cb end
 function QBCore.Functions.CanUseItem(name) return UsableItems[name] ~= nil end
+
 function QBCore.Functions.UseItem(source, name)
     if UsableItems[name] then
         local Player = QBCore.Functions.GetPlayer(source)
@@ -342,18 +426,55 @@ end
 -- NOTIFICAÇÕES
 
 function QBCore.Functions.Notify(source, text, nType, duration)
-    if nType == 'primary' then nType = 'info' end
-    exports['nova_core']:Notify(source, text, nType or 'info', duration)
+    if type(text) == 'table' then
+        local msg = text.text or text.caption or ''
+        local typ = text.type or nType or 'info'
+        exports['nova_core']:Notify(source, msg, typ, duration or text.duration)
+    else
+        if nType == 'primary' then nType = 'info' end
+        exports['nova_core']:Notify(source, text, nType or 'info', duration)
+    end
 end
 
 -- PERMISSÕES
 
 function QBCore.Functions.HasPermission(source, permission)
+    if permission == 'god' then
+        return exports['nova_core']:IsAdmin(source)
+    end
     return exports['nova_core']:HasPermission(source, permission)
+end
+
+function QBCore.Functions.AddPermission(source, permission)
+    -- Stub: gestão de permissões é do nova_core
+end
+
+function QBCore.Functions.RemovePermission(source, permission)
+    -- Stub
+end
+
+function QBCore.Functions.IsPlayerBanned(source)
+    return false
+end
+
+function QBCore.Functions.IsLicenseInUse(license)
+    return false
+end
+
+function QBCore.Functions.IsOptin(source)
+    return true
+end
+
+function QBCore.Functions.ToggleOptin(source)
+    -- Stub
 end
 
 function QBCore.Functions.IsPlayerAdmin(source)
     return exports['nova_core']:IsAdmin(source)
+end
+
+function QBCore.Functions.IsWhitelisted(source)
+    return true
 end
 
 -- UTILIDADES
@@ -375,6 +496,52 @@ function QBCore.Functions.GetSource(identifier)
     return 0
 end
 
+function QBCore.Functions.GetCoords(entity)
+    if entity and DoesEntityExist(entity) then
+        return GetEntityCoords(entity)
+    end
+    return vector3(0, 0, 0)
+end
+
+function QBCore.Functions.SpawnVehicle(source, model, coords, warp)
+    local hash = type(model) == 'string' and joaat(model) or model
+    local vehicle = CreateVehicle(hash, coords.x, coords.y, coords.z, coords.w or 0.0, true, true)
+    while not DoesEntityExist(vehicle) do Wait(10) end
+    if warp then
+        local ped = GetPlayerPed(source)
+        if ped and DoesEntityExist(ped) then
+            TaskWarpPedIntoVehicle(ped, vehicle, -1)
+        end
+    end
+    return vehicle
+end
+
+function QBCore.Functions.Kick(source, reason, setKickReason, deferrals)
+    local p = exports['nova_core']:GetPlayer(source)
+    if p then p:Kick(reason or 'Kicked') end
+end
+
+function QBCore.Functions.IsServer()
+    return true
+end
+
+-- COMMANDS
+
+function QBCore.Commands.Add(name, help, arguments, argsrequired, callback, permission)
+    RegisterCommand(name, function(source, args, rawCommand)
+        if source > 0 then
+            if permission and permission ~= 'user' then
+                if not exports['nova_core']:HasPermission(source, permission) then return end
+            end
+            callback(source, args)
+        end
+    end, false)
+end
+
+function QBCore.Commands.Refresh(source)
+    -- Stub
+end
+
 -- ============================================================
 -- EVENTOS NOVA → QBCORE
 -- ============================================================
@@ -382,16 +549,19 @@ end
 AddEventHandler('nova:server:onPlayerLoaded', function(source, novaPlayer)
     local Player = WrapPlayer(novaPlayer)
     if Player then
+        QBCore.Players[source] = Player
         TriggerEvent('QBCore:Server:OnPlayerLoaded', Player)
         TriggerClientEvent('QBCore:Client:OnPlayerLoaded', source)
     end
 end)
 
 AddEventHandler('nova:server:onPlayerDropped', function(source, citizenid, reason)
+    QBCore.Players[source] = nil
     TriggerEvent('QBCore:Server:OnPlayerUnload', source)
 end)
 
 AddEventHandler('nova:server:onPlayerLogout', function(source, citizenid)
+    QBCore.Players[source] = nil
     TriggerEvent('QBCore:Server:OnPlayerUnload', source)
     TriggerClientEvent('QBCore:Client:OnPlayerUnload', source)
 end)
@@ -412,24 +582,43 @@ AddEventHandler('nova:server:onGangChange', function(source, newGang, oldGang)
     end
 end)
 
-AddEventHandler('nova:server:onMoneyChange', function(source, moneyType, action)
+AddEventHandler('nova:server:onMoneyChange', function(source, moneyType, action, amount, reason)
     local Player = QBCore.Functions.GetPlayer(source)
     if Player then
         local qbType = moneyType == 'black_money' and 'crypto' or moneyType
-        local amount = Player.Functions.GetMoney(qbType)
-        TriggerClientEvent('QBCore:Client:OnMoneyChange', source, qbType, amount, action, '')
+        local currentAmount = Player.Functions.GetMoney(qbType)
+        TriggerClientEvent('QBCore:Client:OnMoneyChange', source, qbType, currentAmount, action or 'change', reason or '')
     end
 end)
 
 RegisterNetEvent('QBCore:Server:UseItem', function(item)
-    local source = source
+    local _source = source
     if item and item.name and UsableItems[item.name] then
-        UsableItems[item.name](source, item)
+        UsableItems[item.name](_source, item)
     end
 end)
 
--- EXPORTS
+RegisterNetEvent('QBCore:ToggleDuty', function()
+    local _source = source
+    local Player = QBCore.Functions.GetPlayer(_source)
+    if Player then
+        Player.Functions.SetJobDuty(not Player.PlayerData.job.onduty)
+    end
+end)
+
+RegisterNetEvent('QBCore:UpdatePlayer', function()
+    local _source = source
+    local Player = QBCore.Functions.GetPlayer(_source)
+    if Player then
+        Player.Functions.UpdatePlayerData()
+    end
+end)
+
+-- EXPORTS (nova_bridge + alias qb-core)
 
 exports('GetCoreObject', function() return QBCore end)
+
+AddEventHandler('__cfx_export_qb-core_GetCoreObject', function(setCB) setCB(function() return QBCore end) end)
+AddEventHandler('__cfx_export_qb-core_GetSharedObject', function(setCB) setCB(function() return QBCore end) end)
 
 print('^2[NOVA Bridge] ^0QBCore Server bridge carregado')

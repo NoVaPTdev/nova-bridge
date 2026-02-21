@@ -1,114 +1,117 @@
---[[
-    NOVA Bridge - Tunnel Module
-    Comunicação cross-side (client↔server)
-    Usado por scripts vRP via: local Tunnel = module("vrp", "lib/Tunnel")
-]]
+local Tools = module("lib/Tools")
 
-Tunnel = {}
+local TriggerRemoteEvent = nil
+local RegisterLocalEvent = nil
+if SERVER then
+    TriggerRemoteEvent = TriggerClientEvent
+    RegisterLocalEvent = RegisterServerEvent
+else
+    TriggerRemoteEvent = TriggerServerEvent
+    RegisterLocalEvent = RegisterNetEvent
+end
 
-local interfaces = {}
-local rcount = 0
+local Tunnel = {}
 
---- Bind de uma interface para receber chamadas do outro lado
----@param name string Nome da interface
----@param itable table Tabela com funções
-function Tunnel.bindInterface(name, itable)
-    interfaces[name] = itable
+local function tunnel_resolve(itable, key)
+    local mtable = getmetatable(itable)
+    local iname = mtable.name
+    local ids = mtable.tunnel_ids
+    local callbacks = mtable.tunnel_callbacks
+    local identifier = mtable.identifier
+    local fname = key
+    local no_wait = false
+    if string.sub(key, 1, 1) == "_" then
+        fname = string.sub(key, 2)
+        no_wait = true
+    end
 
-    for k, v in pairs(itable) do
-        if type(v) == 'function' then
-            RegisterNetEvent('vRP:tunnel:' .. name .. ':' .. k)
-            AddEventHandler('vRP:tunnel:' .. name .. ':' .. k, function(rid, ...)
-                local _source = source
-                if rid and rid ~= '' then
-                    local rets = {v(...)}
-                    if IsDuplicityVersion() then
-                        TriggerClientEvent('vRP:tunnel_res:' .. rid, _source, table.unpack(rets))
-                    else
-                        TriggerServerEvent('vRP:tunnel_res:' .. rid, table.unpack(rets))
-                    end
-                else
-                    v(...)
-                end
-            end)
+    local fcall = function(...)
+        local r = nil
+
+        local args = {...}
+        local dest = nil
+        if SERVER then
+            dest = args[1]
+            args = {table.unpack(args, 2, table.maxn(args))}
+            if parseInt(dest) >= 0 and not no_wait then
+                r = async()
+            end
+        elseif not no_wait then
+            r = async()
+        end
+
+        local rid = -1
+        if r then
+            rid = ids:gen()
+            callbacks[rid] = r
+        end
+
+        if SERVER then
+            TriggerRemoteEvent(iname .. ":tunnel_req", dest, fname, args, identifier, rid)
+        else
+            TriggerRemoteEvent(iname .. ":tunnel_req", fname, args, identifier, rid)
+        end
+
+        if r then
+            return r:wait()
         end
     end
+
+    itable[key] = fcall
+    return fcall
 end
 
---- Obtém interface para chamar funções no outro lado
----@param name string Nome da interface
----@param identifier string|nil Identificador opcional
----@return table
-function Tunnel.getInterface(name, identifier)
-    return setmetatable({}, {
-        __index = function(self, k)
-            local noWait = string.sub(k, 1, 1) == '_'
-            local funcName = noWait and string.sub(k, 2) or k
+function Tunnel.bindInterface(name, interface)
+    RegisterLocalEvent(name .. ":tunnel_req")
+    AddEventHandler(name .. ":tunnel_req", function(member, args, identifier, rid)
+        local source = source
 
-            if IsDuplicityVersion() then
-                -- Server → Client
-                if noWait then
-                    return function(target, ...)
-                        TriggerClientEvent('vRP:tunnel:' .. name .. ':' .. funcName, target, '', ...)
-                    end
-                else
-                    return function(target, ...)
-                        rcount = rcount + 1
-                        local rid = (identifier or GetCurrentResourceName()) .. ':ts:' .. tostring(rcount)
-                        local p = promise.new()
+        local f = interface[member]
 
-                        RegisterNetEvent('vRP:tunnel_res:' .. rid)
-                        local handler = AddEventHandler('vRP:tunnel_res:' .. rid, function(...)
-                            p:resolve({...})
-                        end)
+        local rets = {}
+        if type(f) == "function" then
+            rets = {f(table.unpack(args, 1, table.maxn(args)))}
+        end
 
-                        TriggerClientEvent('vRP:tunnel:' .. name .. ':' .. funcName, target, rid, ...)
-
-                        local result = Citizen.Await(p)
-                        RemoveEventHandler(handler)
-
-                        if result then
-                            return table.unpack(result)
-                        end
-                    end
-                end
+        if rid >= 0 then
+            if SERVER then
+                TriggerRemoteEvent(name .. ":" .. identifier .. ":tunnel_res", source, rid, rets)
             else
-                -- Client → Server
-                if noWait then
-                    return function(...)
-                        TriggerServerEvent('vRP:tunnel:' .. name .. ':' .. funcName, '', ...)
-                    end
-                else
-                    return function(...)
-                        rcount = rcount + 1
-                        local rid = (identifier or GetCurrentResourceName()) .. ':tc:' .. tostring(rcount)
-                        local p = promise.new()
-
-                        RegisterNetEvent('vRP:tunnel_res:' .. rid)
-                        local handler = AddEventHandler('vRP:tunnel_res:' .. rid, function(...)
-                            p:resolve({...})
-                        end)
-
-                        TriggerServerEvent('vRP:tunnel:' .. name .. ':' .. funcName, rid, ...)
-
-                        local result = Citizen.Await(p)
-                        RemoveEventHandler(handler)
-
-                        if result then
-                            return table.unpack(result)
-                        end
-                    end
-                end
+                TriggerRemoteEvent(name .. ":" .. identifier .. ":tunnel_res", rid, rets)
             end
         end
-    })
+    end)
 end
 
---- Define atraso para um destino (compatibilidade)
----@param dest string
----@param delay number
+function Tunnel.getInterface(name, identifier)
+    if not identifier then
+        identifier = GetCurrentResourceName()
+    end
+
+    local callbacks = {}
+    local ids = Tools.newIDGenerator()
+    local r = setmetatable({}, {
+        __index = tunnel_resolve,
+        name = name,
+        tunnel_ids = ids,
+        tunnel_callbacks = callbacks,
+        identifier = identifier,
+    })
+
+    RegisterLocalEvent(name .. ":" .. identifier .. ":tunnel_res")
+    AddEventHandler(name .. ":" .. identifier .. ":tunnel_res", function(rid, args)
+        local callback = callbacks[rid]
+        if callback then
+            ids:free(rid)
+            callbacks[rid] = nil
+            callback(table.unpack(args, 1, table.maxn(args)))
+        end
+    end)
+
+    return r
+end
+
 function Tunnel.setDestDelay(dest, delay)
-    -- stub para compatibilidade
 end
 
 return Tunnel

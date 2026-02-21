@@ -1,15 +1,16 @@
 --[[
     NOVA Bridge - ESX Client
-    Só ativo quando BridgeConfig.Mode == 'esx'
+    Ativo quando ESX está nos ActiveBridges
 ]]
 
-if BridgeConfig.Mode ~= 'esx' then return end
+if not BridgeConfig.ActiveBridges.esx then return end
 
 local isPlayerLoaded = false
 local playerData = {}
 
 CreateThread(function()
     while not exports['nova_core']:IsFrameworkReady() do Wait(100) end
+    ESX.IsReady = true
 end)
 
 -- FUNÇÕES PRINCIPAIS
@@ -42,12 +43,23 @@ function ESX.GetPlayerData()
             { name = 'money', money = data.money and data.money.cash or 0, label = 'Money' },
             { name = 'bank', money = data.money and data.money.bank or 0, label = 'Bank' },
             { name = 'black_money', money = data.money and data.money.black_money or 0, label = 'Black Money' },
+            { name = 'gems', money = data.money and data.money.gems or 0, label = 'Gems' },
         },
+        inventory = {},
+        loadout = {},
+        maxWeight = 24000,
         metadata = data.metadata or {},
         coords = data.position or vector3(0, 0, 0),
+        money = data.money and data.money.cash or 0,
     }
     playerData = esxData
+    ESX.PlayerData = esxData
     return esxData
+end
+
+function ESX.SetPlayerData(key, val)
+    playerData[key] = val
+    ESX.PlayerData[key] = val
 end
 
 function ESX.GetAccount(accountName)
@@ -66,11 +78,17 @@ function ESX.TriggerServerCallback(name, cb, ...)
     exports['nova_core']:TriggerCallback(name, cb, ...)
 end
 
+function ESX.ServerCallback(name, cb, ...)
+    ESX.TriggerServerCallback(name, cb, ...)
+end
+
 -- NOTIFICAÇÕES
 
-function ESX.ShowNotification(msg) exports['nova_core']:ClientNotify(msg, 'info') end
+function ESX.ShowNotification(msg, flash, saveToBrief, hudColorIndex)
+    exports['nova_core']:ClientNotify(msg, 'info')
+end
 
-function ESX.ShowAdvancedNotification(sender, subject, msg)
+function ESX.ShowAdvancedNotification(sender, subject, msg, textureDict, iconType, flash, saveToBrief, hudColorIndex)
     local fullMsg = (sender and sender ~= '') and (sender .. ': ' .. msg) or msg
     exports['nova_core']:ClientNotify(fullMsg, 'info')
 end
@@ -79,7 +97,17 @@ function ESX.ShowHelpNotification(msg, thisFrame, beep, duration)
     exports['nova_core']:ClientNotify(msg, 'info', duration or 5000)
 end
 
-function ESX.ShowFloatingHelpNotification(msg) exports['nova_core']:ClientNotify(msg, 'info') end
+function ESX.ShowFloatingHelpNotification(msg, coords)
+    exports['nova_core']:ClientNotify(msg, 'info')
+end
+
+function ESX.TextUI(msg, position)
+    exports['nova_core']:ClientNotify(msg, 'info')
+end
+
+function ESX.HideUI()
+    -- Stub
+end
 
 -- ESX.Game
 
@@ -103,10 +131,11 @@ function ESX.Game.SpawnVehicle(modelName, coords, heading, cb, networked)
     local vehicle = CreateVehicle(model, coords.x, coords.y, coords.z, heading or 0.0, networked ~= false, false)
     SetModelAsNoLongerNeeded(model)
     if cb then cb(vehicle) end
+    return vehicle
 end
 
 function ESX.Game.SpawnLocalVehicle(modelName, coords, heading, cb)
-    ESX.Game.SpawnVehicle(modelName, coords, heading, cb, false)
+    return ESX.Game.SpawnVehicle(modelName, coords, heading, cb, false)
 end
 
 function ESX.Game.DeleteVehicle(vehicle)
@@ -119,11 +148,50 @@ function ESX.Game.GetVehiclesInArea(coords, maxDistance)
     return result
 end
 
-function ESX.Game.GetVehicles() return GetGamePool('CVehicle') end
+function ESX.Game.GetVehicles()
+    return GetGamePool('CVehicle')
+end
 
 function ESX.Game.GetPedsInArea(coords, maxDistance)
     local peds, result = GetGamePool('CPed'), {}
     for _, p in ipairs(peds) do if #(coords - GetEntityCoords(p)) <= maxDistance then result[#result+1] = p end end
+    return result
+end
+
+function ESX.Game.GetPeds(onlyOtherPeds)
+    local peds = GetGamePool('CPed')
+    if onlyOtherPeds then
+        local myPed = PlayerPedId()
+        local result = {}
+        for _, p in ipairs(peds) do
+            if p ~= myPed then result[#result + 1] = p end
+        end
+        return result
+    end
+    return peds
+end
+
+function ESX.Game.GetObjects()
+    return GetGamePool('CObject')
+end
+
+function ESX.Game.GetPlayers(onlyOtherPlayers, returnPeds, returnCoords)
+    local players = GetActivePlayers()
+    local myPed = PlayerPedId()
+    local result = {}
+    for _, pid in ipairs(players) do
+        local ped = GetPlayerPed(pid)
+        if not onlyOtherPlayers or ped ~= myPed then
+            local entry = pid
+            if returnPeds then
+                entry = { id = pid, ped = ped }
+                if returnCoords then
+                    entry.coords = GetEntityCoords(ped)
+                end
+            end
+            result[#result + 1] = entry
+        end
+    end
     return result
 end
 
@@ -162,6 +230,18 @@ function ESX.Game.GetClosestPlayer(coords, maxDistance)
     return closest, closestDist
 end
 
+function ESX.Game.GetClosestObject(coords, maxDistance, modelFilter)
+    local objects = GetGamePool('CObject')
+    local closest, closestDist = nil, maxDistance or 100.0
+    for _, obj in ipairs(objects) do
+        if not modelFilter or GetEntityModel(obj) == modelFilter then
+            local dist = #(coords - GetEntityCoords(obj))
+            if dist < closestDist then closest, closestDist = obj, dist end
+        end
+    end
+    return closest, closestDist
+end
+
 function ESX.Game.GetPlayersInArea(coords, maxDistance)
     local players, result = GetActivePlayers(), {}
     for _, pid in ipairs(players) do
@@ -174,36 +254,66 @@ function ESX.Game.IsSpawnPointClear(coords, maxDistance)
     return #ESX.Game.GetVehiclesInArea(coords, maxDistance or 3.0) == 0
 end
 
-function ESX.Game.GetVehicleProperties(vehicle)
-    if not DoesEntityExist(vehicle) then return nil end
-    return {
-        model = GetEntityModel(vehicle), plate = GetVehicleNumberPlateText(vehicle),
-        plateIndex = GetVehicleNumberPlateTextIndex(vehicle),
-        bodyHealth = GetVehicleBodyHealth(vehicle), engineHealth = GetVehicleEngineHealth(vehicle),
-        tankHealth = GetVehiclePetrolTankHealth(vehicle),
-        fuelLevel = GetVehicleFuelLevel(vehicle), dirtLevel = GetVehicleDirtLevel(vehicle),
-        color1 = table.pack(GetVehicleColours(vehicle))[1],
-        color2 = table.pack(GetVehicleColours(vehicle))[2],
-        pearlescentColor = table.pack(GetVehicleExtraColours(vehicle))[1],
-        wheelColor = table.pack(GetVehicleExtraColours(vehicle))[2],
-        wheels = GetVehicleWheelType(vehicle), windowTint = GetVehicleWindowTint(vehicle),
-        neonEnabled = { IsVehicleNeonLightEnabled(vehicle,0), IsVehicleNeonLightEnabled(vehicle,1), IsVehicleNeonLightEnabled(vehicle,2), IsVehicleNeonLightEnabled(vehicle,3) },
-        neonColor = table.pack(GetVehicleNeonLightsColour(vehicle)),
-        tyreSmokeColor = table.pack(GetVehicleTyreSmokeColor(vehicle)),
-        modSpoilers = GetVehicleMod(vehicle,0), modFrontBumper = GetVehicleMod(vehicle,1),
-        modRearBumper = GetVehicleMod(vehicle,2), modSideSkirt = GetVehicleMod(vehicle,3),
-        modExhaust = GetVehicleMod(vehicle,4), modFrame = GetVehicleMod(vehicle,5),
-        modGrille = GetVehicleMod(vehicle,6), modHood = GetVehicleMod(vehicle,7),
-        modFender = GetVehicleMod(vehicle,8), modRightFender = GetVehicleMod(vehicle,9),
-        modRoof = GetVehicleMod(vehicle,10), modEngine = GetVehicleMod(vehicle,11),
-        modBrakes = GetVehicleMod(vehicle,12), modTransmission = GetVehicleMod(vehicle,13),
-        modHorns = GetVehicleMod(vehicle,14), modSuspension = GetVehicleMod(vehicle,15),
-        modArmor = GetVehicleMod(vehicle,16),
-        modTurbo = IsToggleModOn(vehicle,18), modSmokeEnabled = IsToggleModOn(vehicle,20),
-        modXenon = IsToggleModOn(vehicle,22),
-        modFrontWheels = GetVehicleMod(vehicle,23), modBackWheels = GetVehicleMod(vehicle,24),
-        modLivery = GetVehicleMod(vehicle,48) == -1 and GetVehicleLivery(vehicle) or GetVehicleMod(vehicle,48),
-    }
+function ESX.Game.SpawnObject(modelName, coords, cb, networked)
+    local model = type(modelName) == 'string' and joaat(modelName) or modelName
+    RequestModel(model)
+    local timeout = 0
+    while not HasModelLoaded(model) do
+        Wait(10); timeout = timeout + 10
+        if timeout > 10000 then if cb then cb(nil) end return end
+    end
+    local obj = CreateObject(model, coords.x, coords.y, coords.z, networked ~= false, false, false)
+    SetModelAsNoLongerNeeded(model)
+    if cb then cb(obj) end
+    return obj
+end
+
+function ESX.Game.DeleteObject(object)
+    if DoesEntityExist(object) then
+        SetEntityAsMissionEntity(object, true, true)
+        DeleteObject(object)
+    end
+end
+
+function ESX.Game.GetVehicleInDirection()
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local fwdVector = GetEntityForwardVector(ped)
+    local fwdCoords = coords + fwdVector * 5.0
+    local rayHandle = StartShapeTestRay(coords.x, coords.y, coords.z, fwdCoords.x, fwdCoords.y, fwdCoords.z, 10, ped, 0)
+    local _, hit, _, _, vehicle = GetShapeTestResult(rayHandle)
+    if hit == 1 and vehicle and DoesEntityExist(vehicle) and GetEntityType(vehicle) == 2 then
+        return vehicle
+    end
+    return nil
+end
+
+function ESX.Game.GetVehicleLabel(model)
+    local hash = type(model) == 'string' and joaat(model) or model
+    local name = GetLabelText(GetDisplayNameFromVehicleModel(hash))
+    if name == 'NULL' then
+        name = GetDisplayNameFromVehicleModel(hash)
+    end
+    return name
+end
+
+function ESX.Game.IsVehicleEmpty(vehicle)
+    if not DoesEntityExist(vehicle) then return true end
+    local passengers = GetVehicleMaxNumberOfPassengers(vehicle)
+    for i = -1, passengers do
+        if not IsVehicleSeatFree(vehicle, i) then
+            return false
+        end
+    end
+    return true
+end
+
+function ESX.Game.GetPedMugshot(ped, transparent)
+    if transparent then
+        return RegisterPedheadshot_3(ped)
+    else
+        return RegisterPedheadshot(ped)
+    end
 end
 
 function ESX.Game.SetVehicleProperties(vehicle, props)
@@ -227,50 +337,182 @@ function ESX.Game.SetVehicleProperties(vehicle, props)
     if props.modTurbo ~= nil then ToggleVehicleMod(vehicle, 18, props.modTurbo) end
     if props.modSmokeEnabled ~= nil then ToggleVehicleMod(vehicle, 20, props.modSmokeEnabled) end
     if props.modXenon ~= nil then ToggleVehicleMod(vehicle, 22, props.modXenon) end
+    if props.xenonColor ~= nil then SetVehicleXenonLightsColour(vehicle, props.xenonColor) end
     if props.modLivery then SetVehicleMod(vehicle, 48, props.modLivery, false); SetVehicleLivery(vehicle, props.modLivery) end
+    if props.extras then
+        for k, v in pairs(props.extras) do
+            local id = tonumber(k)
+            if id and DoesExtraExist(vehicle, id) then
+                SetVehicleExtra(vehicle, id, not v)
+            end
+        end
+    end
+end
+
+function ESX.Game.GetVehicleProperties(vehicle)
+    if not DoesEntityExist(vehicle) then return nil end
+    local colorPrimary, colorSecondary = GetVehicleColours(vehicle)
+    local pearlescentColor, wheelColor = GetVehicleExtraColours(vehicle)
+    local r1, g1, b1 = GetVehicleNeonLightsColour(vehicle)
+    local r2, g2, b2 = GetVehicleTyreSmokeColor(vehicle)
+
+    local props = {
+        model = GetEntityModel(vehicle),
+        plate = GetVehicleNumberPlateText(vehicle),
+        plateIndex = GetVehicleNumberPlateTextIndex(vehicle),
+        bodyHealth = GetVehicleBodyHealth(vehicle),
+        engineHealth = GetVehicleEngineHealth(vehicle),
+        tankHealth = GetVehiclePetrolTankHealth(vehicle),
+        fuelLevel = GetVehicleFuelLevel(vehicle),
+        dirtLevel = GetVehicleDirtLevel(vehicle),
+        color1 = colorPrimary, color2 = colorSecondary,
+        pearlescentColor = pearlescentColor, wheelColor = wheelColor,
+        wheels = GetVehicleWheelType(vehicle),
+        windowTint = GetVehicleWindowTint(vehicle),
+        xenonColor = GetVehicleXenonLightsColour(vehicle),
+        neonEnabled = {
+            IsVehicleNeonLightEnabled(vehicle, 0),
+            IsVehicleNeonLightEnabled(vehicle, 1),
+            IsVehicleNeonLightEnabled(vehicle, 2),
+            IsVehicleNeonLightEnabled(vehicle, 3)
+        },
+        neonColor = { r1, g1, b1 },
+        tyreSmokeColor = { r2, g2, b2 },
+        modSpoilers = GetVehicleMod(vehicle, 0), modFrontBumper = GetVehicleMod(vehicle, 1),
+        modRearBumper = GetVehicleMod(vehicle, 2), modSideSkirt = GetVehicleMod(vehicle, 3),
+        modExhaust = GetVehicleMod(vehicle, 4), modFrame = GetVehicleMod(vehicle, 5),
+        modGrille = GetVehicleMod(vehicle, 6), modHood = GetVehicleMod(vehicle, 7),
+        modFender = GetVehicleMod(vehicle, 8), modRightFender = GetVehicleMod(vehicle, 9),
+        modRoof = GetVehicleMod(vehicle, 10), modEngine = GetVehicleMod(vehicle, 11),
+        modBrakes = GetVehicleMod(vehicle, 12), modTransmission = GetVehicleMod(vehicle, 13),
+        modHorns = GetVehicleMod(vehicle, 14), modSuspension = GetVehicleMod(vehicle, 15),
+        modArmor = GetVehicleMod(vehicle, 16),
+        modTurbo = IsToggleModOn(vehicle, 18), modSmokeEnabled = IsToggleModOn(vehicle, 20),
+        modXenon = IsToggleModOn(vehicle, 22),
+        modFrontWheels = GetVehicleMod(vehicle, 23), modBackWheels = GetVehicleMod(vehicle, 24),
+        modLivery = GetVehicleMod(vehicle, 48) == -1 and GetVehicleLivery(vehicle) or GetVehicleMod(vehicle, 48),
+        extras = {},
+    }
+
+    for i = 0, 14 do
+        if DoesExtraExist(vehicle, i) then
+            props.extras[tostring(i)] = IsVehicleExtraTurnedOn(vehicle, i)
+        end
+    end
+
+    return props
 end
 
 -- ESX.Streaming
 
 ESX.Streaming = {}
-function ESX.Streaming.RequestModel(model, cb) if type(model)=='string' then model=joaat(model) end RequestModel(model) while not HasModelLoaded(model) do Wait(10) end if cb then cb() end end
-function ESX.Streaming.RequestAnimDict(dict, cb) RequestAnimDict(dict) while not HasAnimDictLoaded(dict) do Wait(10) end if cb then cb() end end
-function ESX.Streaming.RequestAnimSet(set, cb) RequestAnimSet(set) while not HasAnimSetLoaded(set) do Wait(10) end if cb then cb() end end
-function ESX.Streaming.RequestNamedPtfxAsset(asset, cb) RequestNamedPtfxAsset(asset) while not HasNamedPtfxAssetLoaded(asset) do Wait(10) end if cb then cb() end end
-function ESX.Streaming.RequestTexture(dict, cb) RequestStreamedTextureDict(dict) while not HasStreamedTextureDictLoaded(dict) do Wait(10) end if cb then cb() end end
+
+function ESX.Streaming.RequestModel(model, cb)
+    if type(model) == 'string' then model = joaat(model) end
+    RequestModel(model)
+    local timeout = 0
+    while not HasModelLoaded(model) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    if cb then cb() end
+end
+
+function ESX.Streaming.RequestAnimDict(dict, cb)
+    RequestAnimDict(dict)
+    local timeout = 0
+    while not HasAnimDictLoaded(dict) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    if cb then cb() end
+end
+
+function ESX.Streaming.RequestAnimSet(set, cb)
+    RequestAnimSet(set)
+    local timeout = 0
+    while not HasAnimSetLoaded(set) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    if cb then cb() end
+end
+
+function ESX.Streaming.RequestNamedPtfxAsset(asset, cb)
+    RequestNamedPtfxAsset(asset)
+    local timeout = 0
+    while not HasNamedPtfxAssetLoaded(asset) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    if cb then cb() end
+end
+
+function ESX.Streaming.RequestTexture(dict, cb)
+    RequestStreamedTextureDict(dict)
+    local timeout = 0
+    while not HasStreamedTextureDictLoaded(dict) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    if cb then cb() end
+end
+
+function ESX.Streaming.RequestScaleformMovie(scaleform, cb)
+    local handle = RequestScaleformMovie(scaleform)
+    local timeout = 0
+    while not HasScaleformMovieLoaded(handle) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    if cb then cb(handle) end
+    return handle
+end
 
 -- ESX.UI (stubs)
 
 ESX.UI = {}; ESX.UI.Menu = {}; ESX.UI.Menu.Opened = {}
-function ESX.UI.Menu.Open() print('^3[NOVA Bridge] ^0ESX.UI.Menu nao suportado - usa ox_lib') end
-function ESX.UI.Menu.Close() end
+ESX.UI.HUD = {}
+
+function ESX.UI.Menu.Open(menuType, namespace, name, data, submit, cancel)
+    print('^3[NOVA Bridge] ^0ESX.UI.Menu nao suportado - usa ox_lib')
+end
+function ESX.UI.Menu.Close(menuType, namespace, name) end
 function ESX.UI.Menu.CloseAll() end
-function ESX.UI.Menu.GetOpened() return nil end
-function ESX.UI.Menu.IsOpen() return false end
+function ESX.UI.Menu.GetOpened(menuType, namespace, name) return nil end
+function ESX.UI.Menu.GetOpenedMenus() return {} end
+function ESX.UI.Menu.IsOpen(menuType, namespace, name) return false end
+function ESX.UI.Menu.RegisterType(menuType, open, close) end
+
+function ESX.UI.HUD.RegisterElement(name, index, priority, html, data) end
+function ESX.UI.HUD.RemoveElement(name) end
+function ESX.UI.HUD.SetDisplay(opacity) end
+function ESX.UI.HUD.UpdateElement(name, data) end
 
 -- EVENTOS NOVA → ESX
 
 RegisterNetEvent('nova:client:onPlayerLoaded', function(data)
-    isPlayerLoaded = true; playerData = ESX.GetPlayerData()
-    TriggerEvent('esx:playerLoaded', playerData)
+    isPlayerLoaded = true
+    ESX.PlayerLoaded = true
+    playerData = ESX.GetPlayerData()
+    ESX.PlayerData = playerData
+    TriggerEvent('esx:playerLoaded', playerData, false)
 end)
 
 RegisterNetEvent('nova:client:onLogout', function()
-    isPlayerLoaded = false; playerData = {}
+    isPlayerLoaded = false
+    ESX.PlayerLoaded = false
+    playerData = {}
+    ESX.PlayerData = {}
     TriggerEvent('esx:onPlayerLogout')
 end)
 
 RegisterNetEvent('nova:client:updatePlayerData', function(data)
+    playerData = ESX.GetPlayerData()
+    ESX.PlayerData = playerData
+
     if data and data.type == 'job' then
-        playerData = ESX.GetPlayerData(); TriggerEvent('esx:setJob', playerData.job)
+        TriggerEvent('esx:setJob', playerData.job)
     elseif data and data.type == 'money' then
-        playerData = ESX.GetPlayerData(); TriggerEvent('esx:setAccountMoney', playerData.accounts)
-    elseif data and not data.type then
-        playerData = ESX.GetPlayerData()
+        if playerData.accounts then
+            for _, acc in ipairs(playerData.accounts) do
+                TriggerEvent('esx:setAccountMoney', acc)
+            end
+        end
+    elseif data and data.type == 'gang' then
+        -- ESX não tem evento nativo de gang, mas atualiza os dados
     end
 end)
 
 RegisterNetEvent('esx:getSharedObject', function() end)
 AddEventHandler('esx:getSharedObject', function(cb) if cb and type(cb) == 'function' then cb(ESX) end end)
+
+exports('getSharedObject', function() return ESX end)
+exports('GetSharedObject', function() return ESX end)
+
+AddEventHandler('__cfx_export_es_extended_getSharedObject', function(setCB) setCB(function() return ESX end) end)
+AddEventHandler('__cfx_export_es_extended_GetSharedObject', function(setCB) setCB(function() return ESX end) end)
 
 print('^2[NOVA Bridge] ^0ESX Client bridge carregado')

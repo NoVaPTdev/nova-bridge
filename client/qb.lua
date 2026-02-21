@@ -1,9 +1,9 @@
 --[[
     NOVA Bridge - QBCore Client
-    Só ativo quando BridgeConfig.Mode == 'qbcore'
+    Ativo quando QBCore está nos ActiveBridges
 ]]
 
-if BridgeConfig.Mode ~= 'qbcore' then return end
+if not BridgeConfig.ActiveBridges.qbcore then return end
 
 local isPlayerLoaded = false
 local playerData = {}
@@ -28,11 +28,14 @@ function QBCore.Functions.GetPlayerData()
             gender = data.charinfo and data.charinfo.gender or 0,
             nationality = data.charinfo and data.charinfo.nationality or '',
             phone = data.charinfo and data.charinfo.phone or '',
+            account = data.charinfo and data.charinfo.account or '0000000000',
+            backstory = data.charinfo and data.charinfo.backstory or '',
         },
         money = {
             cash = data.money and data.money.cash or 0,
             bank = data.money and data.money.bank or 0,
             crypto = data.money and data.money.black_money or 0,
+            gems = data.money and data.money.gems or 0,
         },
         job = {
             name = data.job and data.job.name or 'desempregado',
@@ -41,16 +44,24 @@ function QBCore.Functions.GetPlayerData()
             onduty = data.job and data.job.duty or false,
             payment = data.job and data.job.salary or 0,
             isboss = data.job and data.job.is_boss or false,
-            grade = { name = data.job and tostring(data.job.grade) or '0', level = data.job and data.job.grade or 0 },
+            grade = {
+                name = data.job and tostring(data.job.grade) or '0',
+                level = data.job and data.job.grade or 0,
+            },
         },
         gang = {
             name = data.gang and data.gang.name or 'none',
             label = data.gang and data.gang.label or 'Nenhuma',
             isboss = data.gang and data.gang.is_boss or false,
-            grade = { name = data.gang and tostring(data.gang.grade) or '0', level = data.gang and data.gang.grade or 0 },
+            grade = {
+                name = data.gang and tostring(data.gang.grade) or '0',
+                level = data.gang and data.gang.grade or 0,
+            },
         },
         metadata = data.metadata or {},
         position = data.position,
+        items = {},
+        optin = true,
     }
     playerData = qbData
     return qbData
@@ -64,12 +75,18 @@ end
 
 -- NOTIFICAÇÕES
 
-function QBCore.Functions.Notify(text, nType, duration)
-    if nType == 'primary' then nType = 'info' end
-    exports['nova_core']:ClientNotify(text, nType or 'info', duration)
+function QBCore.Functions.Notify(text, nType, duration, subTitle, notifyId, style)
+    if type(text) == 'table' then
+        local msg = text.text or text.caption or ''
+        local typ = text.type or nType or 'info'
+        exports['nova_core']:ClientNotify(msg, typ, duration or text.duration)
+    else
+        if nType == 'primary' then nType = 'info' end
+        exports['nova_core']:ClientNotify(text, nType or 'info', duration)
+    end
 end
 
--- PROGRESSBAR (stub)
+-- PROGRESSBAR
 
 function QBCore.Functions.Progressbar(name, label, duration, useWhileDead, canCancel, disableControls, animation, prop, propTwo, onFinish, onCancel)
     if duration and duration > 0 then
@@ -77,6 +94,37 @@ function QBCore.Functions.Progressbar(name, label, duration, useWhileDead, canCa
     else
         if onFinish then onFinish() end
     end
+end
+
+-- HAS ITEM (muito usado em scripts QB modernos)
+
+function QBCore.Functions.HasItem(items, amount)
+    amount = amount or 1
+    local pData = QBCore.Functions.GetPlayerData()
+    if not pData or not pData.items then
+        return false
+    end
+
+    if type(items) == 'string' then
+        local count = 0
+        for _, item in pairs(pData.items) do
+            if item.name == items then count = count + (item.amount or item.count or 0) end
+        end
+        return count >= amount
+    end
+
+    if type(items) == 'table' then
+        for _, itemName in ipairs(items) do
+            local count = 0
+            for _, item in pairs(pData.items) do
+                if item.name == itemName then count = count + (item.amount or item.count or 0) end
+            end
+            if count < amount then return false end
+        end
+        return true
+    end
+
+    return false
 end
 
 -- VEÍCULOS
@@ -88,10 +136,12 @@ function QBCore.Functions.SpawnVehicle(model, cb, coords, isNetwork, teleportInt
     while not HasModelLoaded(hash) do Wait(10); timeout=timeout+10; if timeout>10000 then if cb then cb(nil) end return end end
     local ped = PlayerPedId()
     local pos = coords or GetEntityCoords(ped)
-    local vehicle = CreateVehicle(hash, pos.x, pos.y, pos.z, GetEntityHeading(ped), isNetwork ~= false, false)
+    local heading = type(coords) == 'vector4' and coords.w or GetEntityHeading(ped)
+    local vehicle = CreateVehicle(hash, pos.x, pos.y, pos.z, heading, isNetwork ~= false, false)
     SetModelAsNoLongerNeeded(hash)
     if teleportInto then TaskWarpPedIntoVehicle(ped, vehicle, -1) end
     if cb then cb(vehicle) end
+    return vehicle
 end
 
 function QBCore.Functions.DeleteVehicle(vehicle)
@@ -100,19 +150,29 @@ end
 
 function QBCore.Functions.GetVehicleProperties(vehicle)
     if not DoesEntityExist(vehicle) then return nil end
+    local colorPrimary, colorSecondary = GetVehicleColours(vehicle)
+    local pearlescentColor, wheelColor = GetVehicleExtraColours(vehicle)
+    local r1, g1, b1 = GetVehicleNeonLightsColour(vehicle)
+    local r2, g2, b2 = GetVehicleTyreSmokeColor(vehicle)
+
     local props = {
         model = GetEntityModel(vehicle), plate = GetVehicleNumberPlateText(vehicle),
         plateIndex = GetVehicleNumberPlateTextIndex(vehicle),
         bodyHealth = GetVehicleBodyHealth(vehicle), engineHealth = GetVehicleEngineHealth(vehicle),
         tankHealth = GetVehiclePetrolTankHealth(vehicle),
         fuelLevel = GetVehicleFuelLevel(vehicle), dirtLevel = GetVehicleDirtLevel(vehicle),
-        color1 = table.pack(GetVehicleColours(vehicle))[1], color2 = table.pack(GetVehicleColours(vehicle))[2],
-        pearlescentColor = table.pack(GetVehicleExtraColours(vehicle))[1],
-        wheelColor = table.pack(GetVehicleExtraColours(vehicle))[2],
+        color1 = colorPrimary, color2 = colorSecondary,
+        pearlescentColor = pearlescentColor, wheelColor = wheelColor,
         wheels = GetVehicleWheelType(vehicle), windowTint = GetVehicleWindowTint(vehicle),
-        neonEnabled = { IsVehicleNeonLightEnabled(vehicle,0), IsVehicleNeonLightEnabled(vehicle,1), IsVehicleNeonLightEnabled(vehicle,2), IsVehicleNeonLightEnabled(vehicle,3) },
-        neonColor = table.pack(GetVehicleNeonLightsColour(vehicle)),
-        tyreSmokeColor = table.pack(GetVehicleTyreSmokeColor(vehicle)),
+        xenonColor = GetVehicleXenonLightsColour(vehicle),
+        neonEnabled = {
+            IsVehicleNeonLightEnabled(vehicle, 0),
+            IsVehicleNeonLightEnabled(vehicle, 1),
+            IsVehicleNeonLightEnabled(vehicle, 2),
+            IsVehicleNeonLightEnabled(vehicle, 3)
+        },
+        neonColor = { r1, g1, b1 },
+        tyreSmokeColor = { r2, g2, b2 },
         modSpoilers=GetVehicleMod(vehicle,0), modFrontBumper=GetVehicleMod(vehicle,1),
         modRearBumper=GetVehicleMod(vehicle,2), modSideSkirt=GetVehicleMod(vehicle,3),
         modExhaust=GetVehicleMod(vehicle,4), modFrame=GetVehicleMod(vehicle,5),
@@ -148,6 +208,7 @@ function QBCore.Functions.SetVehicleProperties(vehicle, props)
     if props.neonEnabled then for i=1,4 do SetVehicleNeonLightEnabled(vehicle, i-1, props.neonEnabled[i]) end end
     if props.neonColor then SetVehicleNeonLightsColour(vehicle, props.neonColor[1] or 0, props.neonColor[2] or 0, props.neonColor[3] or 0) end
     if props.tyreSmokeColor then SetVehicleTyreSmokeColor(vehicle, props.tyreSmokeColor[1] or 0, props.tyreSmokeColor[2] or 0, props.tyreSmokeColor[3] or 0) end
+    if props.xenonColor ~= nil then SetVehicleXenonLightsColour(vehicle, props.xenonColor) end
     local mods = {[0]='modSpoilers',[1]='modFrontBumper',[2]='modRearBumper',[3]='modSideSkirt',[4]='modExhaust',[5]='modFrame',[6]='modGrille',[7]='modHood',[8]='modFender',[9]='modRightFender',[10]='modRoof',[11]='modEngine',[12]='modBrakes',[13]='modTransmission',[14]='modHorns',[15]='modSuspension',[16]='modArmor',[23]='modFrontWheels',[24]='modBackWheels'}
     for slot, key in pairs(mods) do if props[key] then SetVehicleMod(vehicle, slot, props[key], false) end end
     if props.modTurbo ~= nil then ToggleVehicleMod(vehicle, 18, props.modTurbo) end
@@ -157,7 +218,7 @@ function QBCore.Functions.SetVehicleProperties(vehicle, props)
     if props.extras then for k,v in pairs(props.extras) do local id=tonumber(k); if id and DoesExtraExist(vehicle,id) then SetVehicleExtra(vehicle,id,not v) end end end
 end
 
--- JOGADORES / PROXIMIDADE
+-- JOGADORES / PROXIMIDADE / ENTIDADES
 
 function QBCore.Functions.GetClosestPlayer(coords)
     local players = GetActivePlayers()
@@ -188,14 +249,137 @@ function QBCore.Functions.GetPlayersFromCoords(coords, distance)
     return result
 end
 
-function QBCore.Functions.IsPlayerInVehicle() return IsPedInAnyVehicle(PlayerPedId(), false) end
+function QBCore.Functions.GetClosestVehicle(coords)
+    local vehicles = GetGamePool('CVehicle')
+    local closest, closestDist = nil, 9999.0
+    local pos = coords or GetEntityCoords(PlayerPedId())
+    for _, v in ipairs(vehicles) do
+        local dist = #(pos - GetEntityCoords(v))
+        if dist < closestDist then closest, closestDist = v, dist end
+    end
+    return closest, closestDist
+end
+
+function QBCore.Functions.GetClosestPed(coords)
+    local peds = GetGamePool('CPed')
+    local closest, closestDist, myPed = nil, 9999.0, PlayerPedId()
+    local pos = coords or GetEntityCoords(myPed)
+    for _, p in ipairs(peds) do
+        if p ~= myPed then
+            local dist = #(pos - GetEntityCoords(p))
+            if dist < closestDist then closest, closestDist = p, dist end
+        end
+    end
+    return closest, closestDist
+end
+
+function QBCore.Functions.GetClosestObject(coords, filter)
+    local objects = GetGamePool('CObject')
+    local closest, closestDist = nil, 9999.0
+    local pos = coords or GetEntityCoords(PlayerPedId())
+    for _, obj in ipairs(objects) do
+        if not filter or filter[GetEntityModel(obj)] then
+            local dist = #(pos - GetEntityCoords(obj))
+            if dist < closestDist then closest, closestDist = obj, dist end
+        end
+    end
+    return closest, closestDist
+end
+
+function QBCore.Functions.GetClosestBone(entity, list)
+    if not DoesEntityExist(entity) then return nil, nil, nil end
+    local playerCoords = GetEntityCoords(PlayerPedId())
+    local closestBone, closestDist, closestCoords = nil, 9999.0, nil
+    for _, bone in ipairs(list) do
+        local boneIndex = GetEntityBoneIndexByName(entity, bone.name or bone)
+        local boneCoords = GetWorldPositionOfEntityBone(entity, boneIndex)
+        local dist = #(playerCoords - boneCoords)
+        if dist < closestDist then
+            closestBone = bone
+            closestDist = dist
+            closestCoords = boneCoords
+        end
+    end
+    return closestBone, closestDist, closestCoords
+end
+
+function QBCore.Functions.GetEntities(pool)
+    pool = pool or 'CVehicle'
+    return GetGamePool(pool)
+end
+
+function QBCore.Functions.GetVehicles()
+    return GetGamePool('CVehicle')
+end
+
+function QBCore.Functions.GetPeds()
+    return GetGamePool('CPed')
+end
+
+function QBCore.Functions.GetObjects()
+    return GetGamePool('CObject')
+end
+
+function QBCore.Functions.GetPlayers()
+    return GetActivePlayers()
+end
+
+function QBCore.Functions.IsPlayerInVehicle()
+    return IsPedInAnyVehicle(PlayerPedId(), false)
+end
 
 function QBCore.Functions.GetPlate(vehicle)
-    if vehicle and DoesEntityExist(vehicle) then return string.gsub(GetVehicleNumberPlateText(vehicle), '^%s+', ''):gsub('%s+$', '') end
+    if vehicle and DoesEntityExist(vehicle) then
+        return string.gsub(GetVehicleNumberPlateText(vehicle), '^%s+', ''):gsub('%s+$', '')
+    end
     return nil
 end
 
-function QBCore.Functions.HasPrimaryPermission() return true end
+function QBCore.Functions.HasPrimaryPermission()
+    return true
+end
+
+function QBCore.Functions.GetCoords(entity)
+    if entity and DoesEntityExist(entity) then
+        return GetEntityCoords(entity)
+    end
+    return vector3(0, 0, 0)
+end
+
+-- LOADING HELPERS
+
+function QBCore.Functions.LoadModel(model)
+    if type(model) == 'string' then model = joaat(model) end
+    if not IsModelValid(model) then return false end
+    RequestModel(model)
+    local timeout = 0
+    while not HasModelLoaded(model) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    return HasModelLoaded(model)
+end
+
+function QBCore.Functions.LoadAnimDict(dict)
+    if HasAnimDictLoaded(dict) then return true end
+    RequestAnimDict(dict)
+    local timeout = 0
+    while not HasAnimDictLoaded(dict) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    return HasAnimDictLoaded(dict)
+end
+
+function QBCore.Functions.LoadAnimSet(set)
+    if HasAnimSetLoaded(set) then return true end
+    RequestAnimSet(set)
+    local timeout = 0
+    while not HasAnimSetLoaded(set) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    return HasAnimSetLoaded(set)
+end
+
+function QBCore.Functions.LoadParticleDictionary(dict)
+    if HasNamedPtfxAssetLoaded(dict) then return true end
+    RequestNamedPtfxAsset(dict)
+    local timeout = 0
+    while not HasNamedPtfxAssetLoaded(dict) and timeout < 10000 do Wait(10); timeout = timeout + 10 end
+    return HasNamedPtfxAssetLoaded(dict)
+end
 
 -- DRAW TEXT
 
@@ -203,8 +387,31 @@ function QBCore.Functions.DrawText3D(x, y, z, text)
     SetTextScale(0.35, 0.35); SetTextFont(4); SetTextProportional(true)
     SetTextColour(255, 255, 255, 215); SetTextEntry('STRING'); SetTextCentre(true)
     AddTextComponentString(text); SetDrawOrigin(x, y, z, 0); DrawText(0.0, 0.0)
-    DrawRect(0.0, 0.0125, 0.017 + (#text / 370), 0.03, 0, 0, 0, 75)
+    local factor = string.len(text) / 370
+    DrawRect(0.0, 0.0125, 0.017 + factor, 0.03, 0, 0, 0, 75)
     ClearDrawOrigin()
+end
+
+function QBCore.Functions.DrawText(coords, text)
+    QBCore.Functions.DrawText3D(coords.x, coords.y, coords.z, text)
+end
+
+-- RAYCASTS
+
+function QBCore.Functions.GetEntityAndCoordsFacingEntity()
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local fwd = GetEntityForwardVector(ped)
+    local endCoords = coords + fwd * 10.0
+    local ray = StartShapeTestRay(coords.x, coords.y, coords.z, endCoords.x, endCoords.y, endCoords.z, -1, ped, 0)
+    local _, hit, hitCoords, _, entity = GetShapeTestResult(ray)
+    return entity, hitCoords
+end
+
+-- MISC
+
+function QBCore.Functions.IsServer()
+    return false
 end
 
 -- EVENTOS NOVA → QBCORE
@@ -224,13 +431,25 @@ RegisterNetEvent('nova:client:updatePlayerData', function(data)
     playerData = QBCore.Functions.GetPlayerData()
     if data.type == 'job' then TriggerEvent('QBCore:Client:OnJobUpdate', playerData.job)
     elseif data.type == 'gang' then TriggerEvent('QBCore:Client:OnGangUpdate', playerData.gang)
-    elseif data.type == 'money' then TriggerEvent('QBCore:Client:OnMoneyChange', playerData.money) end
+    elseif data.type == 'money' then TriggerEvent('QBCore:Client:OnMoneyChange', playerData.money)
+    end
 end)
 
 RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function() end)
+RegisterNetEvent('QBCore:Client:OnPlayerUnload', function() end)
+
+RegisterNetEvent('QBCore:Player:SetPlayerData', function(data)
+    playerData = data
+end)
 
 AddEventHandler('QBCore:GetObject', function(cb)
     if cb and type(cb) == 'function' then cb(QBCore) end
 end)
+
+exports('GetCoreObject', function() return QBCore end)
+exports('GetSharedObject', function() return QBCore end)
+
+AddEventHandler('__cfx_export_qb-core_GetCoreObject', function(setCB) setCB(function() return QBCore end) end)
+AddEventHandler('__cfx_export_qb-core_GetSharedObject', function(setCB) setCB(function() return QBCore end) end)
 
 print('^2[NOVA Bridge] ^0QBCore Client bridge carregado')

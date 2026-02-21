@@ -1,74 +1,84 @@
---[[
-    NOVA Bridge - Proxy Module
-    Comunicação cross-resource (mesmo lado: server↔server ou client↔client)
-    Usado por scripts vRP via: local Proxy = module("vrp", "lib/Proxy")
-]]
+local Tools = module("lib/Tools")
 
-Proxy = {}
+local Proxy = {}
 
-local interfaces = {}
-local rcount = 0
+local function proxy_resolve(itable, key)
+    local mtable = getmetatable(itable)
+    local iname = mtable.name
+    local ids = mtable.ids
+    local callbacks = mtable.callbacks
+    local identifier = mtable.identifier
 
---- Regista uma interface acessível por outros resources
----@param name string Nome da interface (ex: "vRP")
----@param itable table Tabela com funções
-function Proxy.addInterface(name, itable)
-    interfaces[name] = itable
+    local fname = key
+    local no_wait = false
+    if string.sub(key, 1, 1) == "_" then
+        fname = string.sub(key, 2)
+        no_wait = true
+    end
 
-    for k, v in pairs(itable) do
-        if type(v) == 'function' then
-            AddEventHandler('vRP:proxy:' .. name .. ':' .. k, function(rid, ...)
-                if rid and rid ~= '' then
-                    local rets = {v(...)}
-                    TriggerEvent('vRP:proxy_res:' .. rid, table.unpack(rets))
-                else
-                    v(...)
-                end
-            end)
+    local fcall = function(...)
+        local rid, r
+
+        if no_wait then
+            rid = -1
+        else
+            r = async()
+            rid = ids:gen()
+            callbacks[rid] = r
+        end
+
+        local args = {...}
+
+        TriggerEvent(iname .. ":proxy", fname, args, identifier, rid)
+
+        if not no_wait then
+            return r:wait()
         end
     end
+
+    itable[key] = fcall
+
+    return fcall
 end
 
---- Obtém uma interface (local ou remota via eventos)
----@param name string Nome da interface
----@param identifier string|nil Identificador opcional
----@return table
+function Proxy.addInterface(name, itable)
+    AddEventHandler(name .. ":proxy", function(member, args, identifier, rid)
+        local f = itable[member]
+        local rets = {}
+        if type(f) == "function" then
+            rets = {f(table.unpack(args, 1, table.maxn(args)))}
+        end
+        if rid >= 0 then
+            TriggerEvent(name .. ":" .. identifier .. ":proxy_res", rid, rets)
+        end
+    end)
+end
+
 function Proxy.getInterface(name, identifier)
-    if interfaces[name] then
-        return interfaces[name]
+    if not identifier then
+        identifier = GetCurrentResourceName()
     end
 
-    return setmetatable({}, {
-        __index = function(self, k)
-            local noWait = string.sub(k, 1, 1) == '_'
-            local funcName = noWait and string.sub(k, 2) or k
-
-            if noWait then
-                return function(...)
-                    TriggerEvent('vRP:proxy:' .. name .. ':' .. funcName, '', ...)
-                end
-            else
-                return function(...)
-                    rcount = rcount + 1
-                    local rid = (identifier or GetCurrentResourceName()) .. ':p:' .. tostring(rcount)
-                    local p = promise.new()
-
-                    local handler = AddEventHandler('vRP:proxy_res:' .. rid, function(...)
-                        p:resolve({...})
-                    end)
-
-                    TriggerEvent('vRP:proxy:' .. name .. ':' .. funcName, rid, ...)
-
-                    local result = Citizen.Await(p)
-                    RemoveEventHandler(handler)
-
-                    if result then
-                        return table.unpack(result)
-                    end
-                end
-            end
-        end
+    local callbacks = {}
+    local ids = Tools.newIDGenerator()
+    local r = setmetatable({}, {
+        __index = proxy_resolve,
+        name = name,
+        ids = ids,
+        callbacks = callbacks,
+        identifier = identifier,
     })
+
+    AddEventHandler(name .. ":" .. identifier .. ":proxy_res", function(rid, rets)
+        local callback = callbacks[rid]
+        if callback then
+            ids:free(rid)
+            callbacks[rid] = nil
+            callback(table.unpack(rets, 1, table.maxn(rets)))
+        end
+    end)
+
+    return r
 end
 
 return Proxy
